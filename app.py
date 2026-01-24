@@ -147,9 +147,10 @@ def obtener_codigo_real(correo_cuenta, password_app, plataforma="Netflix"):
 
         # // INTEGRACIÓN: Lógica de extracción diferenciada
         if plataforma == "Prime Video":
-            # Amazon envía el código directamente en el texto del correo (6 dígitos usualmente)
-            codigos_amazon = re.findall(r'\b\d{6}\b', cuerpo_html)
-            return codigos_amazon[0] if codigos_amazon else "Código de Amazon no encontrado."
+            # // INTEGRACIÓN: Patrón específico de Amazon que detectaste
+            # Busca la frase y captura los 6 números siguientes
+            patron_amazon = r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})'
+            match = re.search(patron_amazon, cuerpo_texto, re.IGNORECASE)
         
         else:
             # Lógica original de Netflix (Botón -> Link -> Código 4 dígitos)
@@ -368,5 +369,6 @@ elif opcion == "Panel Cliente":
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Sistema v2.7 - Universal Extractor 2026")
+
 
 
