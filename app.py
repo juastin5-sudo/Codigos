@@ -43,10 +43,10 @@ def inicializar_db():
 
 inicializar_db()
 
-# --- NUEVA LÓGICA: PROCESADOR DE RECETA CON DIAGNÓSTICO (Inyectada) ---
-# // INTEGRACIÓN: Se añade el parámetro modo_test para no romper la llamada del Panel Cliente
+# --- NUEVA LÓGICA: MOTOR DE MAPEO CON ESCÁNER DE BOTONES (Integrado) ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente, modo_test=False):
     logs = []
+    botones_finales = [] # // INTEGRACIÓN: Lista para capturar botones interactivos
     session_str = session_str.strip()
     try:
         async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
@@ -65,7 +65,7 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
                     logs.append(f"🔍 Buscando botón: {btn_target}")
                     msgs = await client.get_messages(bot_username, limit=1)
                     if msgs and msgs[0].reply_markup:
-                        # // INTEGRACIÓN: search=True ayuda a encontrar el botón aunque tenga emojis
+                        # // INTEGRACIÓN: clic con búsqueda de texto habilitada
                         exito = await msgs[0].click(text=btn_target, search=True)
                         logs.append("✅ Clic exitoso" if exito else f"❌ Botón '{btn_target}' no encontrado")
                     await asyncio.sleep(3)
@@ -86,18 +86,24 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
                     logs.append(f"⏳ Esperando {seg} segundos...")
                     await asyncio.sleep(seg)
             
-            # Captura de respuesta final
+            # // INTEGRACIÓN: Escáner de botones finales para el modo interactivo
             await asyncio.sleep(2)
-            mensajes_finales = await client.get_messages(bot_username, limit=1)
-            respuesta = mensajes_finales[0].text if mensajes_finales else "Sin respuesta."
+            ultimos_msgs = await client.get_messages(bot_username, limit=1)
+            if ultimos_msgs and ultimos_msgs[0].reply_markup:
+                for row in ultimos_msgs[0].reply_markup.rows:
+                    for button in row.buttons:
+                        botones_finales.append(button.text)
             
-            return (respuesta, logs) if modo_test else respuesta
+            respuesta = ultimos_msgs[0].text if ultimos_msgs else "Sin respuesta."
+            
+            # // INTEGRACIÓN: Retorno extendido para el Panel Vendedor
+            return (respuesta, logs, botones_finales) if modo_test else respuesta
             
     except Exception as e:
         error_msg = f"Error en el Mapeo: {str(e)}"
-        return (error_msg, logs) if modo_test else error_msg
+        return (error_msg, logs, []) if modo_test else error_msg
 
-# --- 2. LÓGICA DE EXTRACCIÓN DE CÓDIGO (Original Restaurada) ---
+# --- 2. LÓGICA DE EXTRACCIÓN DE CÓDIGO (Original Restaurada y Robusta) ---
 def obtener_codigo_real(correo_cuenta, password_app):
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
@@ -118,7 +124,6 @@ def obtener_codigo_real(correo_cuenta, password_app):
         else:
             cuerpo_html = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
-        # // Lógica original de filtrado de links y request a Netflix preservada
         links = re.findall(r'href=[\'"]?([^\'" >]+)', cuerpo_html)
         link_codigo = [l for l in links if "update-primary-location" in l or "nm-c.netflix.com" in l]
         if not link_codigo: return "Botón de Netflix no válido."
@@ -126,14 +131,14 @@ def obtener_codigo_real(correo_cuenta, password_app):
         respuesta = requests.get(link_codigo[0])
         texto_pagina = respuesta.content.decode('utf-8', errors='ignore')
         todos_los_numeros = re.findall(r'\b\d{4}\b', texto_pagina)
-        # Filtrado de años original
+        # // INTEGRACIÓN: Se mantiene el filtrado de años crítico del original
         codigos_limpios = [n for n in todos_los_numeros if n not in ["2024", "2025", "2026"]]
         return codigos_limpios[0] if codigos_limpios else "Código no visualizado."
     except Exception as e:
         return f"Error de conexión: {str(e)}"
 
 # --- 3. INTERFAZ Y NAVEGACIÓN ---
-st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered")
+st.set_page_config(page_title="Sistema de Gestión de Cuentas v2.7", layout="centered")
 
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
@@ -213,7 +218,7 @@ elif opcion == "Administrador":
                 st.divider()
         conn.close()
 
-# --- PANEL VENDEDOR (Original + Inyección de Test) ---
+# --- PANEL VENDEDOR (Original + Inyección de Mapeo Interactivo) ---
 elif opcion == "Panel Vendedor":
     st.header("👨‍💼 Acceso Vendedores")
     u_vend = st.text_input("Usuario")
@@ -241,7 +246,10 @@ elif opcion == "Panel Vendedor":
                     st.subheader("🤖 Configuración del Bot")
                     s_session = st.text_area("String Session (Llave)")
                     p_bot = st.text_input("Username del Bot Proveedor (ej: @Bot)")
-                    r_steps = st.text_area("Receta de Pasos (Uno por línea)", placeholder="BOTON:Generar\nENVIAR:CORREO")
+                    
+                    # // INTEGRACIÓN: La receta se carga desde session_state si se está mapeando interactivamente
+                    receta_inicial = st.session_state.get('temp_recipe', "")
+                    r_steps = st.text_area("Receta de Pasos", value=receta_inicial, placeholder="BOTON:Generar\nENVIAR:CORREO")
                     
                     if st.form_submit_button("Guardar Cliente"):
                         try:
@@ -249,26 +257,37 @@ elif opcion == "Panel Vendedor":
                                          VALUES (?,?,?,?,?,?,?,?,?,?)""", (p_form, m_form, app_form, u_cli_form, p_cli_form, v_id, 1, s_session, p_bot, r_steps))
                             conn.commit()
                             st.success("✅ Cliente registrado.")
+                            if 'temp_recipe' in st.session_state: del st.session_state['temp_recipe']
                         except: st.error("Error: El cliente ya existe.")
 
                 st.markdown("---")
                 st.subheader("🗑️ Gestionar Mis Clientes")
-                # // INTEGRACIÓN: Se recuperan todos los campos para el botón de prueba
                 df_c = pd.read_sql_query(f"SELECT * FROM cuentas WHERE vendedor_id={v_id}", conn)
                 if not df_c.empty:
                     for index, row in df_c.iterrows():
                         with st.expander(f"📺 {row['usuario_cliente']} | {row['plataforma']}"):
                             c1, c2 = st.columns(2)
                             
-                            # // INTEGRACIÓN: Botón de Test inyectado sin borrar el de eliminar
-                            if c1.button("🧪 Probar Bot", key=f"test_{row['usuario_cliente']}"):
-                                with st.spinner("Probando receta..."):
-                                    res, logs = asyncio.run(ejecutar_receta_bot(row['string_session'], row['provider_bot'], row['recipe_steps'], row['email'], modo_test=True))
+                            # // INTEGRACIÓN: Herramienta de Mapeo Interactivo inyectada
+                            if c1.button("🧪 Escanear y Mapear", key=f"test_{row['id']}"):
+                                with st.spinner("Escaneando bot..."):
+                                    res, logs, botones = asyncio.run(ejecutar_receta_bot(row['string_session'], row['provider_bot'], row['recipe_steps'], row['email'], modo_test=True))
                                     for l in logs: st.caption(l)
-                                    st.info(f"Respuesta: {res}")
+                                    
+                                    if botones:
+                                        st.write("### 🤖 Botones Detectados:")
+                                        st.info("Haz clic para añadir a la receta:")
+                                        # Mostrar botones en columnas
+                                        cols_btn = st.columns(4)
+                                        for idx, btn_txt in enumerate(botones):
+                                            if cols_btn[idx % 4].button(btn_txt, key=f"scan_{row['id']}_{idx}"):
+                                                nueva_linea = f"\nBOTON:{btn_txt}"
+                                                st.session_state['temp_recipe'] = (row['recipe_steps'] + nueva_linea).strip()
+                                                st.rerun()
+                                    st.info(f"Respuesta Final: {res}")
 
-                            if c2.button("Eliminar", key=f"del_{row['usuario_cliente']}"):
-                                c.execute("DELETE FROM cuentas WHERE usuario_cliente=? AND vendedor_id=?", (row['usuario_cliente'], v_id))
+                            if c2.button("Eliminar", key=f"del_{row['id']}"):
+                                c.execute("DELETE FROM cuentas WHERE id=?", (row['id'],))
                                 conn.commit()
                                 st.rerun()
                 conn.close()
@@ -285,22 +304,20 @@ elif opcion == "Panel Cliente":
             c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?" , (u_log, p_log))
             result = c.fetchone()
             if result:
-                # Recuperación de índices original
                 email_acc, pass_app = result[2], result[3]
                 s_session, p_bot, r_steps = result[8], result[9], result[10]
                 
                 c.execute("SELECT estado, fecha_vencimiento FROM vendedores WHERE id=?", (result[6],))
                 v_status = c.fetchone()
-                # Validación de vencimiento original
                 if v_status[0] == 0 or datetime.strptime(v_status[1], '%Y-%m-%d').date() < datetime.now().date():
                     st.error("Servicio inactivo.")
                 else:
                     with st.spinner('Procesando...'):
                         if s_session and p_bot:
+                            # // INTEGRACIÓN: Llamada compatible con la nueva firma de función
                             codigo = asyncio.run(ejecutar_receta_bot(s_session, p_bot, r_steps, email_acc))
                             st.info(f"Respuesta del Bot: {codigo}")
                         else:
-                            # Lógica original de Netflix/Gmail intacta
                             codigo = obtener_codigo_real(email_acc, pass_app)
                             if len(str(codigo)) == 4:
                                 st.balloons()
@@ -310,4 +327,4 @@ elif opcion == "Panel Cliente":
             conn.close()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Sistema v2.5 - 2026")
+st.sidebar.caption("Sistema v2.7 - Interactive Mapper 2026")
