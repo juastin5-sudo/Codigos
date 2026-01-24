@@ -141,19 +141,65 @@ st.set_page_config(page_title="Gestión de Cuentas v3.0", layout="centered")
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador"]
 opcion = st.sidebar.selectbox("Panel", menu)
 
+# // INTEGRACIÓN: Panel Administrador Refactorizado
 if opcion == "Administrador":
-    st.header("🔑 Administrador")
+    st.header("🔑 Panel de Control Maestro")
+    # Verificación de acceso
     if st.text_input("Clave Maestra", type="password") == "merida2026":
-        with st.expander("➕ Nuevo Vendedor"):
-            nv, cv = st.text_input("Usuario"), st.text_input("Clave", type="password")
-            if st.button("Crear"):
+        
+        # Layout de dos columnas: Registro y Listado
+        col_crear, col_lista = st.columns([1, 2])
+        
+        with col_crear:
+            st.subheader("➕ Registrar Vendedor")
+            nv = st.text_input("Usuario")
+            cv = st.text_input("Contraseña") # // INTEGRACIÓN: Campo visible para password
+            if st.button("Guardar Vendedor"):
                 conn = sqlite3.connect('gestion_netflix.db')
                 try:
-                    conn.execute("INSERT INTO vendedores (usuario, clave, estado, fecha_vencimiento) VALUES (?,?,?,?)", (nv, cv, 1, (datetime.now() + timedelta(days=30)).date()))
+                    # Cálculo automático de 30 días de servicio
+                    venc = (datetime.now() + timedelta(days=30)).date()
+                    conn.execute("INSERT INTO vendedores (usuario, clave, estado, fecha_vencimiento) VALUES (?,?,?,?)", 
+                                 (nv, cv, 1, venc))
                     conn.commit()
-                    st.success("Creado")
-                except: st.error("Existe")
+                    st.success(f"Vendedor {nv} registrado con éxito.")
+                except: st.error("El usuario ya existe.")
                 conn.close()
+
+        with col_lista:
+            st.subheader("👥 Vendedores Registrados")
+            conn = sqlite3.connect('gestion_netflix.db')
+            c = conn.cursor()
+            # // INTEGRACIÓN: Consulta extendida para credenciales y estado
+            c.execute("SELECT id, usuario, clave, estado, fecha_vencimiento FROM vendedores")
+            vendedores = c.fetchall()
+            
+            if not vendedores:
+                st.info("No hay vendedores registrados aún.")
+            else:
+                for v in vendedores:
+                    with st.container():
+                        # Lógica visual de estado
+                        status_color = "green" if v[3] == 1 else "red"
+                        status_text = "ACTIVO" if v[3] == 1 else "INACTIVO"
+                        
+                        # Fila de datos del vendedor
+                        c1, c2, c3, c4 = st.columns([1, 1, 1, 0.5])
+                        c1.write(f"**ID:** {v[0]} | **User:** `{v[1]}`")
+                        c2.write(f"**Pass:** `{v[2]}`") # // INTEGRACIÓN: Visualización de clave
+                        c3.write(f"📅 Vence: {v[4]}")
+                        
+                        # // INTEGRACIÓN: Botón dinámico de Activación/Desactivación
+                        btn_label = "🔴 Desactivar" if v[3] == 1 else "🟢 Activar"
+                        if c4.button(btn_label, key=f"v_stat_{v[0]}"):
+                            nuevo_est = 0 if v[3] == 1 else 1
+                            c.execute("UPDATE vendedores SET estado=? WHERE id=?", (nuevo_est, v[0]))
+                            conn.commit()
+                            st.rerun()
+                        
+                        # Separador visual con color de estado
+                        st.markdown(f"<div style='height:2px; background-color:{status_color}; margin-bottom:15px;'></div>", unsafe_allow_html=True)
+            conn.close()
 
 elif opcion == "Panel Vendedor":
     st.header("👨‍💼 Vendedores")
@@ -173,7 +219,6 @@ elif opcion == "Panel Vendedor":
                         c.execute("INSERT INTO correos_madre (vendedor_id, correo_imap, password_app, servidor_imap) VALUES (?,?,?,?)", (v_id, me, mp, ms))
                         conn.commit()
 
-            # // INTEGRACIÓN: Separación lógica del Registro
             st.subheader("Registrar Nuevo Cliente")
             metodo = st.radio("Método de Extracción:", ["Buzón Madre (Correo)", "Bot de Telegram"], horizontal=True)
             
@@ -182,7 +227,6 @@ elif opcion == "Panel Vendedor":
                 p_cli = st.text_input("Clave para el Cliente", type="password")
                 plat = st.selectbox("Plataforma", ["Netflix", "Prime Video", "Disney+", "Otros"])
                 
-                # Campos condicionales según el método
                 id_m, s_sess, p_bot, r_steps = None, None, None, None
                 
                 if metodo == "Buzón Madre (Correo)":
@@ -205,7 +249,6 @@ elif opcion == "Panel Vendedor":
                     conn.commit()
                     st.success("Guardado")
             
-            # Gestión de cuentas existentes
             st.markdown("---")
             df_c = pd.read_sql_query(f"SELECT * FROM cuentas WHERE vendedor_id={v_id}", conn)
             for _, row in df_c.iterrows():
@@ -218,6 +261,9 @@ elif opcion == "Panel Vendedor":
                         c.execute("DELETE FROM cuentas WHERE id=?", (row['id'],))
                         conn.commit()
                         st.rerun()
+        else:
+            if vend and vend[1] == 0: st.error("Cuenta de vendedor desactivada.")
+            elif u_v: st.error("Credenciales incorrectas.")
         conn.close()
 
 elif opcion == "Panel Cliente":
@@ -229,7 +275,6 @@ elif opcion == "Panel Cliente":
         c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?" , (u_l, p_l))
         res = c.fetchone()
         if res:
-            # res[8] es string_session, res[11] es id_madre
             with st.spinner('Extrayendo...'):
                 if res[8]: # Método BOT
                     codigo = asyncio.run(ejecutar_receta_bot(res[8], res[9], res[10], res[2]))
