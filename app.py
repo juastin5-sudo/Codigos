@@ -219,78 +219,96 @@ elif opcion == "Administrador":
         conn.close()
 
 # --- PANEL VENDEDOR (Original + Inyección de Mapeo Interactivo) ---
+# --- PANEL VENDEDOR (REFACCIÓN DE MAPEADOR INTERACTIVO) ---
 elif opcion == "Panel Vendedor":
     st.header("👨‍💼 Acceso Vendedores")
     u_vend = st.text_input("Usuario")
     p_vend = st.text_input("Clave", type="password")
+    
     if u_vend and p_vend:
         conn = sqlite3.connect('gestion_netflix.db')
         c = conn.cursor()
-        c.execute("SELECT id, estado, fecha_vencimiento FROM vendedores WHERE usuario=? AND clave=?", (u_vend, p_vend))
+        c.execute("SELECT id, estado FROM vendedores WHERE usuario=? AND clave=?", (u_vend, p_vend))
         vendedor = c.fetchone()
-        if vendedor:
-            v_id, v_estado, v_vence = vendedor
-            v_vence_dt = datetime.strptime(v_vence, '%Y-%m-%d').date()
-            if v_estado == 0 or v_vence_dt < datetime.now().date():
-                st.error("Tu cuenta está suspendida o vencida.")
-            else:
-                st.success(f"Bienvenido. Acceso hasta: {v_vence}")
-                with st.form("registro_cliente"):
-                    st.subheader("Registrar Nuevo Cliente")
-                    p_form = st.selectbox("Plataforma", ["Netflix", "Disney+", "Prime Video", "Bot Automatizado"])
-                    m_form = st.text_input("Correo Netflix (Dueño)")
-                    app_form = st.text_input("Clave Aplicación Gmail", type="password")
-                    u_cli_form = st.text_input("Correo de cuenta registrada")
-                    p_cli_form = st.text_input("Clave para pedir Código", type="password")
-                    st.markdown("---")
-                    st.subheader("🤖 Configuración del Bot")
-                    s_session = st.text_area("String Session (Llave)")
-                    p_bot = st.text_input("Username del Bot Proveedor (ej: @Bot)")
-                    
-                    # // INTEGRACIÓN: La receta se carga desde session_state si se está mapeando interactivamente
-                    receta_inicial = st.session_state.get('temp_recipe', "")
-                    r_steps = st.text_area("Receta de Pasos", value=receta_inicial, placeholder="BOTON:Generar\nENVIAR:CORREO")
-                    
-                    if st.form_submit_button("Guardar Cliente"):
-                        try:
-                            c.execute("""INSERT INTO cuentas (plataforma, email, password_app, usuario_cliente, pass_cliente, vendedor_id, estado, string_session, provider_bot, recipe_steps) 
-                                         VALUES (?,?,?,?,?,?,?,?,?,?)""", (p_form, m_form, app_form, u_cli_form, p_cli_form, v_id, 1, s_session, p_bot, r_steps))
-                            conn.commit()
-                            st.success("✅ Cliente registrado.")
-                            if 'temp_recipe' in st.session_state: del st.session_state['temp_recipe']
-                        except: st.error("Error: El cliente ya existe.")
+        
+        if vendedor and vendedor[1] == 1:
+            v_id = vendedor[0]
+            
+            # --- FORMULARIO DE REGISTRO ---
+            with st.form("registro_cliente"):
+                st.subheader("Registrar/Actualizar Cliente")
+                u_cli_form = st.text_input("Correo de cuenta registrada (ID Único)")
+                # // INTEGRACIÓN: El área de texto ahora escucha directamente al session_state
+                receta_key = f"recipe_input_{u_cli_form}" if u_cli_form else "recipe_input_default"
+                
+                # Recuperar valor previo si existe en el estado global
+                val_actual = st.session_state.get('temp_recipe', "")
+                r_steps = st.text_area("Receta de Pasos", value=val_actual, height=150)
+                
+                # Otros campos...
+                p_form = st.selectbox("Plataforma", ["Netflix", "Disney+", "Prime Video", "Bot Automatizado"])
+                m_form = st.text_input("Correo Dueño (Gmail)")
+                app_form = st.text_input("Clave App Gmail", type="password")
+                p_cli_form = st.text_input("Clave Cliente", type="password")
+                s_session = st.text_area("String Session")
+                p_bot = st.text_input("Username Bot")
 
-                st.markdown("---")
-                st.subheader("🗑️ Gestionar Mis Clientes")
-                df_c = pd.read_sql_query(f"SELECT * FROM cuentas WHERE vendedor_id={v_id}", conn)
-                if not df_c.empty:
-                    for index, row in df_c.iterrows():
-                        with st.expander(f"📺 {row['usuario_cliente']} | {row['plataforma']}"):
-                            c1, c2 = st.columns(2)
+                if st.form_submit_button("Guardar Cliente"):
+                    c.execute("""INSERT OR REPLACE INTO cuentas 
+                                 (plataforma, email, password_app, usuario_cliente, pass_cliente, vendedor_id, estado, string_session, provider_bot, recipe_steps) 
+                                 VALUES (?,?,?,?,?,?,?,?,?,?)""", 
+                                 (p_form, m_form, app_form, u_cli_form, p_cli_form, v_id, 1, s_session, p_bot, r_steps))
+                    conn.commit()
+                    st.success("✅ Datos guardados correctamente.")
+                    st.session_state['temp_recipe'] = "" # Limpiar después de guardar
+
+            # --- GESTIÓN Y MAPEADOR ---
+            st.markdown("---")
+            df_c = pd.read_sql_query(f"SELECT * FROM cuentas WHERE vendedor_id={v_id}", conn)
+            for _, row in df_c.iterrows():
+                with st.expander(f"📺 {row['usuario_cliente']}"):
+                    c1, c2 = st.columns(2)
+                    
+                    if c1.button("🧪 ESCANEAR BOT", key=f"scan_act_{row['id']}"):
+                        with st.spinner("Conectando con Telegram..."):
+                            # // INTEGRACIÓN: Ejecutamos con la receta actual del registro
+                            res, logs, botones = asyncio.run(ejecutar_receta_bot(row['string_session'], row['provider_bot'], row['recipe_steps'], row['email'], modo_test=True))
                             
-                            # // INTEGRACIÓN: Herramienta de Mapeo Interactivo inyectada
-                            if c1.button("🧪 Escanear y Mapear", key=f"test_{row['id']}"):
-                                with st.spinner("Escaneando bot..."):
-                                    res, logs, botones = asyncio.run(ejecutar_receta_bot(row['string_session'], row['provider_bot'], row['recipe_steps'], row['email'], modo_test=True))
-                                    for l in logs: st.caption(l)
-                                    
-                                    if botones:
-                                        st.write("### 🤖 Botones Detectados:")
-                                        st.info("Haz clic para añadir a la receta:")
-                                        # Mostrar botones en columnas
-                                        cols_btn = st.columns(4)
-                                        for idx, btn_txt in enumerate(botones):
-                                            if cols_btn[idx % 4].button(btn_txt, key=f"scan_{row['id']}_{idx}"):
-                                                nueva_linea = f"\nBOTON:{btn_txt}"
-                                                st.session_state['temp_recipe'] = (row['recipe_steps'] + nueva_linea).strip()
-                                                st.rerun()
-                                    st.info(f"Respuesta Final: {res}")
+                            # Guardar resultados en el estado para que sobrevivan al próximo clic de botón
+                            st.session_state[f"last_scan_{row['id']}"] = (res, logs, botones)
 
-                            if c2.button("Eliminar", key=f"del_{row['id']}"):
-                                c.execute("DELETE FROM cuentas WHERE id=?", (row['id'],))
-                                conn.commit()
-                                st.rerun()
-                conn.close()
+                    # Mostrar botones si existen en el estado de este cliente
+                    scan_data = st.session_state.get(f"last_scan_{row['id']}")
+                    if scan_data:
+                        res, logs, botones = scan_data
+                        for l in logs: st.caption(l)
+                        
+                        if botones:
+                            st.write("### 🤖 Botones Detectados:")
+                            cols_btn = st.columns(3)
+                            for idx, btn_txt in enumerate(botones):
+                                # // INTEGRACIÓN CRÍTICA: Al hacer clic, inyectamos directamente en el estado global
+                                if cols_btn[idx % 3].button(f"➕ {btn_txt}", key=f"add_{row['id']}_{idx}"):
+                                    nueva_linea = f"BOTON:{btn_txt}"
+                                    receta_vieja = row['recipe_steps']
+                                    
+                                    # Actualizar base de datos inmediatamente para que se vea en el formulario
+                                    nueva_receta = (receta_vieja + "\n" + nueva_linea).strip()
+                                    c.execute("UPDATE cuentas SET recipe_steps=? WHERE id=?", (nueva_receta, row['id']))
+                                    conn.commit()
+                                    
+                                    # Sincronizar con el formulario de arriba
+                                    st.session_state['temp_recipe'] = nueva_receta
+                                    st.success(f"Añadido: {btn_txt}")
+                                    st.rerun()
+                            
+                        st.info(f"Respuesta: {res}")
+
+                    if c2.button("Eliminar", key=f"del_v_{row['id']}"):
+                        c.execute("DELETE FROM cuentas WHERE id=?", (row['id'],))
+                        conn.commit()
+                        st.rerun()
+        conn.close()
 
 # --- PANEL CLIENTE (Original Restaurado) ---
 elif opcion == "Panel Cliente":
@@ -328,3 +346,4 @@ elif opcion == "Panel Cliente":
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Sistema v2.7 - Interactive Mapper 2026")
+
