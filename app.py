@@ -121,11 +121,55 @@ def obtener_codigo_real(correo_cuenta, password_app):
 # --- 3. INTERFAZ Y NAVEGACIÓN ---
 st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered")
 
-menu = ["Panel Cliente", "Panel Vendedor", "Administrador"]
+# INTEGRACIÓN: Menú actualizado con la nueva opción de generar llave
+menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
+# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO ---
+if opcion == "🔑 Generar mi Llave":
+    st.header("🛡️ Generador de Sesión Seguro")
+    st.warning("Usa esta herramienta para obtener tu 'String Session' de forma privada. Nadie más verá estos datos.")
+
+    # INTEGRACIÓN: Credenciales de la API (Asegúrate de reemplazarlas por las reales si es necesario)
+    api_id = 34062718 
+    api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
+
+    if 'client_gen' not in st.session_state:
+        st.session_state.client_gen = TelegramClient(StringSession(), api_id, api_hash)
+
+    # PASO 1: Ingresar Teléfono
+    phone = st.text_input("Ingresa tu número (con código de país, ej: +58412...)", key="phone_gen")
+    
+    if st.button("Enviar Código a mi Telegram"):
+        if phone:
+            async def enviar_codigo():
+                await st.session_state.client_gen.connect()
+                res = await st.session_state.client_gen.send_code_request(phone)
+                st.session_state.phone_code_hash = res.phone_code_hash
+                st.session_state.step = 2
+            
+            asyncio.run(enviar_codigo())
+            st.success("✅ Código enviado. Revisa tu app de Telegram.")
+
+    # PASO 2: Ingresar Código y generar
+    if 'step' in st.session_state and st.session_state.step == 2:
+        code = st.text_input("Ingresa el código que te llegó", key="code_gen")
+        
+        if st.button("Generar mi Llave Final"):
+            async def validar_y_generar():
+                try:
+                    await st.session_state.client_gen.sign_in(phone, code, phone_code_hash=st.session_state.phone_code_hash)
+                    sesion_final = st.session_state.client_gen.session.save()
+                    st.success("🎯 ¡Aquí tienes tu Llave! Cópiala y guárdala:")
+                    st.code(sesion_final)
+                    await st.session_state.client_gen.disconnect()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+            
+            asyncio.run(validar_y_generar())
+
 # --- PANEL ADMINISTRADOR (INTACTO) ---
-if opcion == "Administrador":
+elif opcion == "Administrador":
     st.header("🔑 Acceso Administrativo")
     clave_admin = st.text_input("Ingrese Clave Maestra", type="password")
     
