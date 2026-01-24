@@ -18,6 +18,7 @@ MI_API_HASH = 'ca9d5cbc6ce832c6660f949a5567a159'
 def inicializar_db():
     conn = sqlite3.connect('gestion_netflix.db')
     c = conn.cursor()
+    # Tabla Vendedores (Original)
     c.execute('''CREATE TABLE IF NOT EXISTS vendedores 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   usuario TEXT UNIQUE, 
@@ -25,6 +26,7 @@ def inicializar_db():
                   estado INTEGER, 
                   fecha_vencimiento DATE)''')
     
+    # Tabla Cuentas (Extendida con campos de Bot)
     c.execute('''CREATE TABLE IF NOT EXISTS cuentas 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   plataforma TEXT, 
@@ -43,17 +45,17 @@ def inicializar_db():
 
 inicializar_db()
 
-# --- NUEVA LÓGICA: PROCESADOR DE RECETA TELEGRAM ---
+# --- NUEVA LÓGICA: PROCESADOR DE RECETA TELEGRAM (REFACTORIZADO) ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente):
     try:
         async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
             await client.send_message(bot_username, "/start")
-            await asyncio.sleep(3)
+            await asyncio.sleep(3) 
             
             pasos = receta_text.split("\n")
             for paso in pasos:
                 p = paso.strip()
-                if not p: continue
+                if not p: continue 
                 
                 if p.startswith("BOTON:"):
                     btn_target = p.replace("BOTON:", "").strip()
@@ -77,12 +79,12 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
             
             await asyncio.sleep(2)
             mensajes_finales = await client.get_messages(bot_username, limit=1)
-            return mensajes_finales[0].text if mensajes_finales else "Sin respuesta final."
+            return mensajes_finales[0].text if mensajes_finales else "El bot no devolvió respuesta final."
             
     except Exception as e:
         return f"Error en el Mapeo: {str(e)}"
 
-# --- 2. LÓGICA DE EXTRACCIÓN DE CÓDIGO ---
+# --- 2. LÓGICA DE EXTRACCIÓN DE CÓDIGO (ORIGINAL INTACTA) ---
 def obtener_codigo_real(correo_cuenta, password_app):
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
@@ -102,9 +104,11 @@ def obtener_codigo_real(correo_cuenta, password_app):
                     cuerpo_html = part.get_payload(decode=True).decode('utf-8', errors='ignore')
         else:
             cuerpo_html = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+
         links = re.findall(r'href=[\'"]?([^\'" >]+)', cuerpo_html)
         link_codigo = [l for l in links if "update-primary-location" in l or "nm-c.netflix.com" in l]
         if not link_codigo: return "Botón de Netflix no válido."
+
         respuesta = requests.get(link_codigo[0])
         texto_pagina = respuesta.content.decode('utf-8', errors='ignore')
         todos_los_numeros = re.findall(r'\b\d{4}\b', texto_pagina)
@@ -119,43 +123,51 @@ st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
+# --- PANEL GENERADOR SEGURO (CONEXIÓN PERSISTENTE RECONSTRUIDA) ---
 if opcion == "🔑 Generar mi Llave":
     st.header("🛡️ Generador de Sesión Seguro")
-    phone = st.text_input("Tu número de Telegram (+58...)", key="phone_input_final")
-    if st.button("Paso 1: Solicitar Código"):
+    phone = st.text_input("Número de Telegram (+58...)", key="phone_gen")
+    
+    if st.button("1. Solicitar Código"):
         if phone:
-            async def solicitar():
+            async def iniciar_solicitud():
                 client = TelegramClient(StringSession(), MI_API_ID, MI_API_HASH)
                 await client.connect()
                 res = await client.send_code_request(phone)
                 st.session_state.p_hash = res.phone_code_hash
-                st.session_state.p_phone = phone
-                st.session_state.p_step = 2
-                await client.disconnect()
-            asyncio.run(solicitar())
-            st.success("📩 Código enviado.")
-    if st.session_state.get('p_step') == 2:
-        code = st.text_input("Introduce el código de 5 dígitos", key="code_input_final")
-        if st.button("Paso 2: Generar mi Llave"):
-            async def validar():
+                st.session_state.p_number = phone
+                st.session_state.wait_code = True
+                st.session_state.active_client = client 
+            asyncio.run(iniciar_solicitud())
+            st.success("✅ Código enviado.")
+
+    if st.session_state.get('wait_code'):
+        st.markdown("---")
+        v_code = st.text_input("Escribe el código de 5 dígitos", key="v_code_input")
+        if st.button("2. ¡Generar Llave Final!"):
+            async def completar_registro():
                 try:
-                    client = TelegramClient(StringSession(), MI_API_ID, MI_API_HASH)
-                    await client.connect()
-                    await client.sign_in(st.session_state.p_phone, code, phone_code_hash=st.session_state.p_hash)
-                    st.session_state.mi_llave_final = client.session.save()
-                    st.session_state.p_step = 3
+                    client = st.session_state.active_client
+                    if not client.is_connected(): await client.connect()
+                    await client.sign_in(st.session_state.p_number, v_code, phone_code_hash=st.session_state.p_hash)
+                    st.session_state.final_str = client.session.save()
+                    st.session_state.wait_code = False
                     await client.disconnect()
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
-            asyncio.run(validar())
-    if 'mi_llave_final' in st.session_state:
-        st.success("🎯 ¡LOGRADO!")
-        st.code(st.session_state.mi_llave_final)
+            asyncio.run(completar_registro())
 
+    if 'final_str' in st.session_state:
+        st.balloons()
+        st.success("🎯 ¡SESIÓN GENERADA!")
+        st.code(st.session_state.final_str)
+
+# --- PANEL ADMINISTRADOR (RECONSTRUIDO TOTALMENTE) ---
 elif opcion == "Administrador":
     st.header("🔑 Acceso Administrativo")
     clave_admin = st.text_input("Ingrese Clave Maestra", type="password")
     if clave_admin == "merida2026":
+        st.success("Acceso Concedido")
         with st.expander("➕ Registrar Nuevo Vendedor"):
             nuevo_v = st.text_input("Usuario Vendedor")
             clave_v = st.text_input("Clave Vendedor", type="password")
@@ -169,20 +181,24 @@ elif opcion == "Administrador":
                     st.success(f"Vendedor {nuevo_v} creado.")
                 except: st.error("El usuario ya existe.")
                 conn.close()
+
         st.subheader("Lista de Vendedores")
         conn = sqlite3.connect('gestion_netflix.db')
         df_v = pd.read_sql_query("SELECT id, usuario, clave, estado, fecha_vencimiento FROM vendedores", conn)
         for index, row in df_v.iterrows():
-            col1, col2, col3 = st.columns([2, 2, 1])
-            col1.write(f"👤 **{row['usuario']}**")
-            col2.write(f"Vence: {row['fecha_vencimiento']}")
-            if col3.button("Alt", key=f"v_btn_{row['id']}"):
-                nuevo_estado = 0 if row['estado'] == 1 else 1
-                conn.cursor().execute("UPDATE vendedores SET estado = ? WHERE id = ?", (nuevo_estado, row['id']))
-                conn.commit()
-                st.rerun()
+            with st.container():
+                col1, col2, col3 = st.columns([2, 2, 1])
+                col1.write(f"👤 **{row['usuario']}**")
+                col2.write(f"Vence: {row['fecha_vencimiento']} | {'✅' if row['estado']==1 else '❌'}")
+                if col3.button("Alt", key=f"btn_{row['id']}"):
+                    nuevo_estado = 0 if row['estado'] == 1 else 1
+                    conn.cursor().execute("UPDATE vendedores SET estado = ? WHERE id = ?", (nuevo_estado, row['id']))
+                    conn.commit()
+                    st.rerun()
+                st.divider()
         conn.close()
 
+# --- PANEL VENDEDOR (EXTENDIDO + FUNCIÓN ELIMINAR CLIENTE) ---
 elif opcion == "Panel Vendedor":
     st.header("👨‍💼 Acceso Vendedores")
     u_vend = st.text_input("Usuario")
@@ -196,7 +212,7 @@ elif opcion == "Panel Vendedor":
             v_id, v_estado, v_vence = vendedor
             v_vence_dt = datetime.strptime(v_vence, '%Y-%m-%d').date()
             if v_estado == 0 or v_vence_dt < datetime.now().date():
-                st.error("Cuenta inactiva.")
+                st.error("Tu cuenta está suspendida o vencida.")
             else:
                 st.success(f"Bienvenido. Acceso hasta: {v_vence}")
                 with st.form("registro_cliente"):
@@ -217,33 +233,28 @@ elif opcion == "Panel Vendedor":
                                         VALUES (?,?,?,?,?,?,?,?,?,?)""", (p_form, m_form, app_form, u_cli_form, p_cli_form, v_id, 1, s_session, p_bot, r_steps))
                             conn.commit()
                             st.success("✅ Cliente registrado.")
-                        except: st.error("El usuario ya existe.")
+                        except: st.error("Error: El cliente ya existe.")
 
-                # --- INTEGRACIÓN: Lista de Clientes con Función de Eliminar ---
+                # // INTEGRACIÓN: Gestión Interactiva de Clientes con Eliminación
                 st.markdown("---")
-                st.subheader("🗑️ Mis Clientes (Gestionar)")
+                st.subheader("🗑️ Gestionar Mis Clientes")
                 df_c = pd.read_sql_query(f"SELECT usuario_cliente, plataforma, email FROM cuentas WHERE vendedor_id={v_id}", conn)
-                
-                if df_c.empty:
-                    st.info("No tienes clientes registrados aún.")
-                else:
+                if not df_c.empty:
                     for index, row in df_c.iterrows():
                         with st.container():
-                            col_info, col_del = st.columns([4, 1])
-                            with col_info:
-                                st.write(f"📺 **{row['usuario_cliente']}** ({row['plataforma']})")
-                                st.caption(f"📧 Correo: {row['email']}")
-                            with col_del:
-                                # // INTEGRACIÓN: Botón de eliminación con confirmación por clave
-                                if st.button("Eliminar", key=f"del_{row['usuario_cliente']}"):
-                                    c.execute("DELETE FROM cuentas WHERE usuario_cliente=? AND vendedor_id=?", (row['usuario_cliente'], v_id))
-                                    conn.commit()
-                                    st.warning(f"Cliente {row['usuario_cliente']} eliminado.")
-                                    st.rerun()
-                            st.divider()
+                            c1, c2 = st.columns([4, 1])
+                            c1.write(f"📺 **{row['usuario_cliente']}** | {row['plataforma']}")
+                            # INTEGRACIÓN: Botón Eliminar Cliente
+                            if c2.button("Eliminar", key=f"del_{row['usuario_cliente']}"):
+                                c.execute("DELETE FROM cuentas WHERE usuario_cliente=? AND vendedor_id=?", (row['usuario_cliente'], v_id))
+                                conn.commit()
+                                st.warning(f"Cliente {row['usuario_cliente']} eliminado.")
+                                st.rerun()
+                        st.divider()
         else: st.error("Credenciales incorrectas.")
         conn.close()
 
+# --- PANEL CLIENTE (EXTENDIDO) ---
 elif opcion == "Panel Cliente":
     st.header("📺 Obtener mi Código")
     u_log = st.text_input("Correo de cuenta")
@@ -255,6 +266,7 @@ elif opcion == "Panel Cliente":
             c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?", (u_log, p_log))
             result = c.fetchone()
             if result:
+                # Columnas: email(2), pass_app(3), vendedor_id(6), session(8), bot(9), steps(10)
                 email_acc, pass_app = result[2], result[3]
                 s_session, p_bot, r_steps = result[8], result[9], result[10]
                 c.execute("SELECT estado, fecha_vencimiento FROM vendedores WHERE id=?", (result[6],))
