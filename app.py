@@ -10,6 +10,10 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
+# --- INTEGRACIÓN: Constantes Globales de API ---
+MI_API_ID = 34062718  
+MI_API_HASH = 'ca9d5cbc6ce832c6660f949a5567a159'
+
 # --- 1. CONFIGURACIÓN DE BASE DE DATOS ---
 def inicializar_db():
     conn = sqlite3.connect('gestion_netflix.db')
@@ -43,12 +47,9 @@ inicializar_db()
 
 # --- NUEVA LÓGICA: PROCESADOR DE RECETA TELEGRAM ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente):
-    # INTEGRACIÓN: Credenciales base del sistema
-    api_id = 34062718  
-    api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
-    
+    # INTEGRACIÓN: Uso de constantes globales MI_API_ID y MI_API_HASH
     try:
-        async with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+        async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
             await client.send_message(bot_username, "/start")
             await asyncio.sleep(2)
             
@@ -124,73 +125,68 @@ st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
-# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (CONEXIÓN PERSISTENTE) ---
+# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (VERSIÓN DEFINITIVA 2026) ---
 if opcion == "🔑 Generar mi Llave":
     st.header("🛡️ Generador de Sesión Seguro")
     
-    # INTEGRACIÓN: Credenciales unificadas para el generador
-    api_id = 34062718 
-    api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
+    # INTEGRACIÓN: Uso de constantes globales para asegurar consistencia
+    api_id = MI_API_ID 
+    api_hash = MI_API_HASH
 
-    # 1. Entrada de teléfono
-    phone = st.text_input("Número (+58...)", key="phone_gen")
-    
-    if st.button("1. Solicitar Código"):
+    phone = st.text_input("Tu número de Telegram (+58...)", key="phone_input_final")
+
+    # Paso 1: Solicitar código
+    if st.button("Paso 1: Solicitar Código"):
         if phone:
-            async def iniciar_solicitud():
-                # INTEGRACIÓN: Se crea el cliente y se guarda en session_state para persistencia
+            async def solicitar():
+                # INTEGRACIÓN: Creamos cliente temporal para el handshake inicial
                 client = TelegramClient(StringSession(), api_id, api_hash)
                 await client.connect()
                 res = await client.send_code_request(phone)
-                
-                # INTEGRACIÓN: Guardado de metadata y objeto cliente activo
+                # INTEGRACIÓN: Persistencia de datos críticos en session_state
                 st.session_state.p_hash = res.phone_code_hash
-                st.session_state.p_number = phone
-                st.session_state.wait_code = True
-                st.session_state.active_client = client 
+                st.session_state.p_phone = phone
+                st.session_state.p_step = 2
+                await client.disconnect()
             
-            asyncio.run(iniciar_solicitud())
-            st.success("✅ Código enviado. ¡Aparecerá en tu Telegram en segundos!")
+            asyncio.run(solicitar())
+            st.success("📩 Código enviado. Revisa tu app de Telegram.")
 
-    # 2. Entrada de código (Solo aparece si el paso 1 tuvo éxito)
-    if st.session_state.get('wait_code'):
+    # Paso 2: Validar código
+    if st.session_state.get('p_step') == 2:
         st.markdown("---")
-        v_code = st.text_input("Escribe el código de 5 dígitos aquí", key="v_code_input")
+        code = st.text_input("Introduce el código de 5 dígitos", key="code_input_final")
         
-        if st.button("2. ¡Generar Llave Final!"):
-            if v_code:
-                async def completar_registro():
+        if st.button("Paso 2: Generar mi Llave"):
+            if code:
+                async def validar():
                     try:
-                        # INTEGRACIÓN: Recuperación del cliente persistente
-                        client = st.session_state.active_client
+                        # INTEGRACIÓN: Re-instanciación de cliente para validación final (estilo stateless)
+                        client = TelegramClient(StringSession(), api_id, api_hash)
+                        await client.connect()
                         
-                        if not client.is_connected():
-                            await client.connect()
-                        
-                        # Intentamos el login con los datos persistidos
+                        # INTEGRACIÓN: Firma de sesión con hash persistido
                         await client.sign_in(
-                            st.session_state.p_number, 
-                            v_code, 
+                            st.session_state.p_phone, 
+                            code, 
                             phone_code_hash=st.session_state.p_hash
                         )
                         
-                        # Generar y guardar la llave en el estado
-                        st.session_state.final_str = client.session.save()
-                        st.session_state.wait_code = False
-                        await client.disconnect() # Cierre seguro tras éxito
+                        # INTEGRACIÓN: Extracción de StringSession y actualización de estado
+                        st.session_state.mi_llave_final = client.session.save()
+                        st.session_state.p_step = 3
+                        await client.disconnect()
                     except Exception as e:
-                        st.error(f"Error al validar: {str(e)}")
-                        if 'active_client' in st.session_state: 
-                            await st.session_state.active_client.disconnect()
+                        st.error(f"Error al validar: {str(e)}. Pide un código nuevo.")
                 
-                asyncio.run(completar_registro())
+                asyncio.run(validar())
 
-    # 3. Resultado final persistente
-    if 'final_str' in st.session_state:
+    # Paso 3: Mostrar resultado
+    if 'mi_llave_final' in st.session_state:
         st.balloons()
-        st.success("🎯 ¡SESIÓN GENERADA!")
-        st.code(st.session_state.final_str)
-        st.info("Copia el código de arriba y pégalo en el formulario de vendedor.")
+        st.success("🎯 ¡LOGRADO! Aquí tienes tu String Session:")
+        st.code(st.session_state.mi_llave_final)
+        st.info("Copia este código largo y pégalo en el Panel Vendedor.")
 
 # --- PANEL ADMINISTRADOR (INTACTO) ---
 elif opcion == "Administrador":
@@ -276,6 +272,7 @@ elif opcion == "Panel Vendedor":
                     
                     if st.form_submit_button("Guardar Cliente"):
                         try:
+                            # INTEGRACIÓN: Inserción de campos extendidos para bot
                             c.execute("""INSERT INTO cuentas 
                                 (plataforma, email, password_app, usuario_cliente, pass_cliente, vendedor_id, estado, string_session, provider_bot, recipe_steps) 
                                 VALUES (?,?,?,?,?,?,?,?,?,?)""",
@@ -319,6 +316,7 @@ elif opcion == "Panel Cliente":
                     st.error("Servicio temporalmente inactivo.")
                 else:
                     with st.spinner('Procesando...'):
+                        # INTEGRACIÓN: Lógica de despacho dual (Telegram Bot o Gmail IMAP)
                         if s_session and p_bot:
                             codigo = asyncio.run(ejecutar_receta_bot(s_session, p_bot, r_steps, email_acc))
                             st.info(f"Respuesta del Bot: {codigo}")
