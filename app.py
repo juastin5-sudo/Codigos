@@ -128,21 +128,21 @@ opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 # --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (CORREGIDA) ---
 if opcion == "🔑 Generar mi Llave":
     st.header("🛡️ Generador de Sesión Seguro")
-    st.info("Paso 1: Pon tu número -> Recibe código. Paso 2: Pon el código -> Obtén tu llave.") // INTEGRACIÓN
+    st.info("Paso 1: Pon tu número -> Recibe código. Paso 2: Pon el código -> Obtén tu llave.") # INTEGRACIÓN
 
     # Credenciales del Administrador
     api_id = 34062718 
     api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
 
     # Inicializar el cliente en el estado de la sesión si no existe
-    if 'client_gen' not in st.session_state: // INTEGRACIÓN
+    if 'client_gen' not in st.session_state: # INTEGRACIÓN
         st.session_state.client_gen = TelegramClient(StringSession(), api_id, api_hash)
         st.session_state.connected = False
 
-    phone = st.text_input("Número (+58...)", key="phone_input") // INTEGRACIÓN
+    phone = st.text_input("Número (+58...)", key="phone_input") # INTEGRACIÓN
 
     # BOTÓN 1: ENVIAR CÓDIGO
-    if st.button("Enviar Código"): // INTEGRACIÓN
+    if st.button("Enviar Código"): # INTEGRACIÓN
         async def send_code():
             if not st.session_state.client_gen.is_connected():
                 await st.session_state.client_gen.connect()
@@ -156,14 +156,13 @@ if opcion == "🔑 Generar mi Llave":
         asyncio.run(send_code())
         st.success("✅ Revisa tu Telegram.")
 
-    # BOTÓN 2: VALIDAR CÓDIGO (Lógica robusta para persistencia de conexión)
-    if 'step' in st.session_state and st.session_state.step == 2: // INTEGRACIÓN
+    # BOTÓN 2: VALIDAR CÓDIGO
+    if 'step' in st.session_state and st.session_state.step == 2: # INTEGRACIÓN
         code = st.text_input("Código de 5 dígitos", key="code_input")
         
         if st.button("Generar Llave Final"):
             async def sign_in():
                 try:
-                    # Nos aseguramos de que el cliente siga conectado antes de firmar
                     if not st.session_state.client_gen.is_connected():
                         await st.session_state.client_gen.connect()
                     
@@ -173,18 +172,15 @@ if opcion == "🔑 Generar mi Llave":
                         phone_code_hash=st.session_state.phone_code_hash
                     )
                     
-                    # Generamos el StringSession
                     llave = st.session_state.client_gen.session.save()
                     st.success("🎯 Copia tu Llave:")
                     st.code(llave)
                     
-                    # Limpiamos para seguridad
                     await st.session_state.client_gen.disconnect()
                     del st.session_state.step
                 except Exception as e:
                     st.error(f"Error al validar: {str(e)}")
             
-            # Usamos una función dedicada para manejar el loop de Streamlit de forma segura
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(sign_in())
@@ -333,3 +329,4 @@ elif opcion == "Panel Cliente":
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Sistema v2.0 - 2026")
+
