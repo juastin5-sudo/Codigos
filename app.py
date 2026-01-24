@@ -105,11 +105,12 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
 
 # --- 2. LÓGICA DE EXTRACCIÓN UNIVERSAL (Netflix & Prime Video) ---
 # // INTEGRACIÓN: Se reemplaza la lógica original por la versión multiserver y multiplataforma
+# --- 2. LÓGICA DE EXTRACCIÓN MAESTRA (Netflix & Prime Video) ---
 def obtener_codigo_real(correo_cuenta, password_app, plataforma="Netflix"):
     try:
         dominio = correo_cuenta.split("@")[-1].lower()
         
-        # Selección de Servidor IMAP // INTEGRACIÓN
+        # 1. DETECCIÓN DE SERVIDOR IMAP
         if "gmail.com" in dominio:
             imap_server = "imap.gmail.com"
         elif any(d in dominio for d in ["hotmail.com", "outlook.com", "live.com"]):
@@ -121,51 +122,58 @@ def obtener_codigo_real(correo_cuenta, password_app, plataforma="Netflix"):
         mail.login(correo_cuenta, password_app)
         mail.select("inbox")
         
-        # // INTEGRACIÓN: Configuración según Plataforma
+        # 2. FILTRO DE BÚSQUEDA POR PLATAFORMA
         if plataforma == "Prime Video":
-            criterio = '(FROM "amazon.com" SUBJECT "inicio de sesion")'
+            # Amazon: Buscamos cualquier correo de ellos (el asunto varía por país)
+            criterio = '(FROM "amazon.com")'
         else:
+            # Netflix: Buscamos el remitente y asunto oficial
             criterio = '(FROM "info@account.netflix.com" SUBJECT "Tu codigo de acceso temporal")'
         
         status, mensajes = mail.search(None, criterio)
-        
-        if not mensajes[0]: 
-            return f"No se encontró correo de {plataforma}. Revisa Spam."
+        if not mensajes[0]: return f"No se encontró correo de {plataforma}."
             
         ultimo_id = mensajes[0].split()[-1]
         res, datos = mail.fetch(ultimo_id, '(RFC822)')
         msg = email.message_from_bytes(datos[0][1])
         
-        cuerpo_html = ""
+        # 3. EXTRACCIÓN DE CUERPO (HTML y Texto Plano)
+        cuerpo_texto = ""
         if msg.is_multipart():
             for part in msg.walk():
-                if part.get_content_type() == "text/html":
-                    cuerpo_html = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                    break
+                if part.get_content_type() in ["text/plain", "text/html"]:
+                    cuerpo_texto += part.get_payload(decode=True).decode('utf-8', errors='ignore')
         else:
-            cuerpo_html = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+            cuerpo_texto = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
-        # // INTEGRACIÓN: Lógica de extracción diferenciada
+        # 4. EXTRACCIÓN DE CÓDIGO SEGÚN LÓGICA ESPECÍFICA
         if plataforma == "Prime Video":
             # // INTEGRACIÓN: Patrón específico de Amazon que detectaste
             # Busca la frase y captura los 6 números siguientes
             patron_amazon = r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})'
             match = re.search(patron_amazon, cuerpo_texto, re.IGNORECASE)
+            
+            if match:
+                return match.group(1)
+            else:
+                # Respaldo: si no halla la frase, busca cualquier grupo de 6 números
+                respaldo = re.findall(r'\b\d{6}\b', cuerpo_texto)
+                return respaldo[0] if respaldo else "Código de 6 dígitos no hallado."
         
         else:
-            # Lógica original de Netflix (Botón -> Link -> Código 4 dígitos)
-            links = re.findall(r'href=[\'"]?([^\'" >]+)', cuerpo_html)
+            # Lógica de Netflix: Buscar link -> Entrar -> Buscar 4 números (no años)
+            links = re.findall(r'href=[\'"]?([^\'" >]+)', cuerpo_texto)
             link_codigo = [l for l in links if "update-primary-location" in l or "nm-c.netflix.com" in l]
             
             if not link_codigo: return "Botón de Netflix no válido."
 
+            # Navegar al link de Netflix para ver el código en la web
             respuesta = requests.get(link_codigo[0])
             texto_pagina = respuesta.content.decode('utf-8', errors='ignore')
-            todos_los_numeros = re.findall(r'\b\d{4}\b', texto_pagina)
             
-            # Filtrado de años preservado // INTEGRACIÓN
-            codigos_limpios = [n for n in todos_los_numeros if n not in ["2024", "2025", "2026"]]
-            return codigos_limpios[0] if codigos_limpios else "Código no visualizado."
+            # Filtro original: 4 dígitos ignorando los años actuales
+            nums = [n for n in re.findall(r'\b\d{4}\b', texto_pagina) if n not in ["2024", "2025", "2026"]]
+            return nums[0] if nums else "Código de Netflix no visualizado."
             
     except Exception as e:
         return f"Error en {plataforma}: {str(e)}"
@@ -369,6 +377,7 @@ elif opcion == "Panel Cliente":
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Sistema v2.7 - Universal Extractor 2026")
+
 
 
 
