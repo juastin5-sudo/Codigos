@@ -25,7 +25,7 @@ def inicializar_db():
                   estado INTEGER, 
                   fecha_vencimiento DATE)''')
     
-    # // INTEGRACIÓN: Nueva tabla para buzones principales
+    # // INTEGRACIÓN: Tabla para buzones principales
     c.execute('''CREATE TABLE IF NOT EXISTS correos_madre (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  vendedor_id INTEGER,
@@ -34,7 +34,7 @@ def inicializar_db():
                  servidor_imap TEXT DEFAULT 'imap.gmail.com',
                  FOREIGN KEY (vendedor_id) REFERENCES vendedores(id))''')
 
-    # // INTEGRACIÓN: Tabla cuentas actualizada con id_madre
+    # // INTEGRACIÓN: Tabla cuentas vinculada
     c.execute('''CREATE TABLE IF NOT EXISTS cuentas 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   plataforma TEXT, 
@@ -58,7 +58,7 @@ inicializar_db()
 # --- NUEVA LÓGICA: MOTOR DE MAPEO CON ESCÁNER DE BOTONES ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente, modo_test=False):
     logs = []
-    botones_finales = [] # // INTEGRACIÓN: Lista para capturar botones interactivos
+    botones_finales = []
     session_str = session_str.strip()
     try:
         async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
@@ -76,7 +76,6 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
                     logs.append(f"🔍 Buscando botón: {btn_target}")
                     msgs = await client.get_messages(bot_username, limit=1)
                     if msgs and msgs[0].reply_markup:
-                        # // INTEGRACIÓN: clic con búsqueda de texto habilitada
                         exito = await msgs[0].click(text=btn_target, search=True)
                         logs.append("✅ Clic exitoso" if exito else f"❌ Botón '{btn_target}' no encontrado")
                     await asyncio.sleep(3)
@@ -97,7 +96,6 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
                     logs.append(f"⏳ Esperando {seg} segundos...")
                     await asyncio.sleep(seg)
             
-            # // INTEGRACIÓN: Escáner de botones finales
             await asyncio.sleep(2)
             ultimos_msgs = await client.get_messages(bot_username, limit=1)
             if ultimos_msgs and ultimos_msgs[0].reply_markup:
@@ -112,17 +110,13 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
         error_msg = f"Error en el Mapeo: {str(e)}"
         return (error_msg, logs, []) if modo_test else error_msg
 
-# --- 2. LÓGICA DE EXTRACCIÓN (Original y Centralizada) ---
-
-# // INTEGRACIÓN: Nueva función para búsqueda por destinatario original (TO)
+# --- 2. LÓGICA DE EXTRACCIÓN CENTRALIZADA ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv="imap.gmail.com"):
     try:
-        # 1. Conexión estable a la Madre
         mail = imaplib.IMAP4_SSL(imap_serv)
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
         
-        # 2. Búsqueda por destinatario original (Filtro Crítico para redirecciones)
         if plataforma == "Prime Video":
             criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")'
         else:
@@ -143,7 +137,6 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         else:
             cuerpo = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
-        # 3. Lógica de extracción
         if plataforma == "Prime Video":
             patron = r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})'
             match = re.search(patron, cuerpo, re.IGNORECASE)
@@ -153,108 +146,20 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             link_n = [l for l in links if "update-primary-location" in l or "nm-c.netflix.com" in l]
             if not link_n: return "Link de Netflix no encontrado"
             resp = requests.get(link_n[0])
-            # Filtro de 4 dígitos ignorando años
             nums = [n for n in re.findall(r'\b\d{4}\b', resp.text) if n not in ["2024", "2025", "2026"]]
             return nums[0] if nums else "Código Netflix no hallado"
-
     except Exception as e:
         return f"Error: {str(e)}"
 
-# // INTEGRACIÓN: Mantenida para compatibilidad con cuentas de acceso directo (Legacy)
-def obtener_codigo_real(correo_cuenta, password_app, plataforma="Netflix", imap_custom=None):
-    try:
-        if imap_custom:
-            imap_server = imap_custom
-        else:
-            dominio = correo_cuenta.split("@")[-1].lower()
-            if "gmail.com" in dominio: imap_server = "imap.gmail.com"
-            elif any(d in dominio for d in ["hotmail.com", "outlook.com", "live.com"]): imap_server = "imap-mail.outlook.com"
-            else: imap_server = f"imap.{dominio}"
-
-        mail = imaplib.IMAP4_SSL(imap_server)
-        mail.login(correo_cuenta, password_app)
-        mail.select("inbox")
-        
-        if plataforma == "Prime Video": criterio = '(FROM "amazon.com")'
-        else: criterio = '(FROM "info@account.netflix.com" SUBJECT "Tu codigo de acceso temporal")'
-        
-        status, mensajes = mail.search(None, criterio)
-        if not mensajes[0]: return f"No se encontró correo de {plataforma}."
-            
-        ultimo_id = mensajes[0].split()[-1]
-        res, datos = mail.fetch(ultimo_id, '(RFC822)')
-        msg = email.message_from_bytes(datos[0][1])
-        
-        cuerpo_texto = ""
-        if msg.is_multipart():
-            for part in msg.walk():
-                if part.get_content_type() in ["text/plain", "text/html"]:
-                    cuerpo_texto += part.get_payload(decode=True).decode('utf-8', errors='ignore')
-        else:
-            cuerpo_texto = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-
-        if plataforma == "Prime Video":
-            patron_amazon = r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})'
-            match = re.search(patron_amazon, cuerpo_texto, re.IGNORECASE)
-            if match: return match.group(1)
-            respaldo = re.findall(r'\b\d{6}\b', cuerpo_texto)
-            return respaldo[0] if respaldo else "Código de 6 dígitos no hallado."
-        else:
-            links = re.findall(r'href=[\'"]?([^\'" >]+)', cuerpo_texto)
-            link_codigo = [l for l in links if "update-primary-location" in l or "nm-c.netflix.com" in l]
-            if not link_codigo: return "Botón de Netflix no válido."
-            respuesta = requests.get(link_codigo[0])
-            nums = [n for n in re.findall(r'\b\d{4}\b', respuesta.text) if n not in ["2024", "2025", "2026"]]
-            return nums[0] if nums else "Código de Netflix no visualizado."
-    except Exception as e:
-        return f"Error en {plataforma}: {str(e)}"
-
 # --- 3. INTERFAZ Y NAVEGACIÓN ---
-st.set_page_config(page_title="Sistema de Gestión de Cuentas v2.8", layout="centered")
-menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
+st.set_page_config(page_title="Sistema de Gestión de Cuentas v2.9", layout="centered")
+
+# // INTEGRACIÓN: Apartado de 'Generar mi Llave' eliminado del menú
+menu = ["Panel Cliente", "Panel Vendedor", "Administrador"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
-# --- PANEL GENERADOR SEGURO ---
-if opcion == "🔑 Generar mi Llave":
-    st.header("🛡️ Generador de Sesión Seguro")
-    phone = st.text_input("Número de Telegram (+58...)", key="phone_gen")
-    
-    if st.button("1. Solicitar Código"):
-        if phone:
-            async def iniciar_solicitud():
-                client = TelegramClient(StringSession(), MI_API_ID, MI_API_HASH)
-                await client.connect()
-                res = await client.send_code_request(phone)
-                st.session_state.p_hash = res.phone_code_hash
-                st.session_state.p_number = phone
-                st.session_state.wait_code = True
-                st.session_state.active_client = client 
-            asyncio.run(iniciar_solicitud())
-            st.success("✅ Código enviado.")
-
-    if st.session_state.get('wait_code'):
-        st.markdown("---")
-        v_code = st.text_input("Escribe el código de 5 dígitos", key="v_code_input")
-        if st.button("2. ¡Generar Llave Final!"):
-            async def completar_registro():
-                try:
-                    client = st.session_state.active_client
-                    if not client.is_connected(): await client.connect()
-                    await client.sign_in(st.session_state.p_number, v_code, phone_code_hash=st.session_state.p_hash)
-                    st.session_state.final_str = client.session.save()
-                    st.session_state.wait_code = False
-                    await client.disconnect()
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-            asyncio.run(completar_registro())
-
-    if 'final_str' in st.session_state:
-        st.balloons()
-        st.success("🎯 ¡SESIÓN GENERADA!")
-        st.code(st.session_state.final_str)
-
 # --- PANEL ADMINISTRADOR ---
-elif opcion == "Administrador":
+if opcion == "Administrador":
     st.header("🔑 Acceso Administrativo")
     clave_admin = st.text_input("Ingrese Clave Maestra", type="password")
     if clave_admin == "merida2026":
@@ -386,7 +291,6 @@ elif opcion == "Panel Cliente":
             c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?" , (u_log, p_log))
             result = c.fetchone()
             if result:
-                # 1:plataforma, 2:email_cliente, 8:session, 9:bot, 10:steps, 11:id_madre
                 v_id_ref = result[6]
                 id_madre_ref = result[11]
                 
@@ -397,20 +301,18 @@ elif opcion == "Panel Cliente":
                     st.error("Servicio inactivo.")
                 else:
                     with st.spinner('Procesando...'):
-                        if result[8] and result[9]: # Caso Telegram Bot
+                        if result[8] and result[9]: 
                             codigo = asyncio.run(ejecutar_receta_bot(result[8], result[9], result[10], result[2]))
                             st.info(f"Respuesta del Bot: {codigo}")
                         else:
-                            # // INTEGRACIÓN: Lógica Centralizada (Modificación)
                             c.execute("SELECT correo_imap, password_app, servidor_imap FROM correos_madre WHERE id=?", (id_madre_ref,))
                             datos_madre = c.fetchone()
                             
                             if datos_madre:
-                                # // INTEGRACIÓN: Uso de obtener_codigo_centralizado con filtrado por TO
                                 codigo = obtener_codigo_centralizado(
                                     email_madre=datos_madre[0], 
                                     pass_app_madre=datos_madre[1], 
-                                    email_cliente_final=result[2], # El email original de la cuenta
+                                    email_cliente_final=result[2], 
                                     plataforma=result[1],
                                     imap_serv=datos_madre[2]
                                 )
@@ -426,8 +328,4 @@ elif opcion == "Panel Cliente":
             conn.close()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Sistema v2.8 - Multi-Buzón con Filtro TO 2026")
-
-
-
-
+st.sidebar.caption("Sistema v2.9 - Clean Architecture 2026")
