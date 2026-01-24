@@ -103,39 +103,71 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
         error_msg = f"Error en el Mapeo: {str(e)}"
         return (error_msg, logs, []) if modo_test else error_msg
 
-# --- 2. LÓGICA DE EXTRACCIÓN DE CÓDIGO (Original Restaurada y Robusta) ---
-def obtener_codigo_real(correo_cuenta, password_app):
+# --- 2. LÓGICA DE EXTRACCIÓN UNIVERSAL (Netflix & Prime Video) ---
+# // INTEGRACIÓN: Se reemplaza la lógica original por la versión multiserver y multiplataforma
+def obtener_codigo_real(correo_cuenta, password_app, plataforma="Netflix"):
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        dominio = correo_cuenta.split("@")[-1].lower()
+        
+        # Selección de Servidor IMAP // INTEGRACIÓN
+        if "gmail.com" in dominio:
+            imap_server = "imap.gmail.com"
+        elif any(d in dominio for d in ["hotmail.com", "outlook.com", "live.com"]):
+            imap_server = "imap-mail.outlook.com"
+        else:
+            imap_server = f"imap.{dominio}"
+
+        mail = imaplib.IMAP4_SSL(imap_server)
         mail.login(correo_cuenta, password_app)
         mail.select("inbox")
-        criterio = '(FROM "info@account.netflix.com" SUBJECT "Tu codigo de acceso temporal")'
+        
+        # // INTEGRACIÓN: Configuración según Plataforma
+        if plataforma == "Prime Video":
+            criterio = '(FROM "amazon.com" SUBJECT "inicio de sesion")'
+        else:
+            criterio = '(FROM "info@account.netflix.com" SUBJECT "Tu codigo de acceso temporal")'
+        
         status, mensajes = mail.search(None, criterio)
-        if not mensajes[0]: return "No hay correos recientes."
+        
+        if not mensajes[0]: 
+            return f"No se encontró correo de {plataforma}. Revisa Spam."
+            
         ultimo_id = mensajes[0].split()[-1]
         res, datos = mail.fetch(ultimo_id, '(RFC822)')
-        raw_email = datos[0][1]
-        msg = email.message_from_bytes(raw_email)
+        msg = email.message_from_bytes(datos[0][1])
+        
         cuerpo_html = ""
         if msg.is_multipart():
             for part in msg.walk():
                 if part.get_content_type() == "text/html":
                     cuerpo_html = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    break
         else:
             cuerpo_html = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
-        links = re.findall(r'href=[\'"]?([^\'" >]+)', cuerpo_html)
-        link_codigo = [l for l in links if "update-primary-location" in l or "nm-c.netflix.com" in l]
-        if not link_codigo: return "Botón de Netflix no válido."
+        # // INTEGRACIÓN: Lógica de extracción diferenciada
+        if plataforma == "Prime Video":
+            # Amazon envía el código directamente en el texto del correo (6 dígitos usualmente)
+            codigos_amazon = re.findall(r'\b\d{6}\b', cuerpo_html)
+            return codigos_amazon[0] if codigos_amazon else "Código de Amazon no encontrado."
+        
+        else:
+            # Lógica original de Netflix (Botón -> Link -> Código 4 dígitos)
+            links = re.findall(r'href=[\'"]?([^\'" >]+)', cuerpo_html)
+            link_codigo = [l for l in links if "update-primary-location" in l or "nm-c.netflix.com" in l]
+            
+            if not link_codigo: return "Botón de Netflix no válido."
 
-        respuesta = requests.get(link_codigo[0])
-        texto_pagina = respuesta.content.decode('utf-8', errors='ignore')
-        todos_los_numeros = re.findall(r'\b\d{4}\b', texto_pagina)
-        # // INTEGRACIÓN: Se mantiene el filtrado de años crítico del original
-        codigos_limpios = [n for n in todos_los_numeros if n not in ["2024", "2025", "2026"]]
-        return codigos_limpios[0] if codigos_limpios else "Código no visualizado."
+            respuesta = requests.get(link_codigo[0])
+            texto_pagina = respuesta.content.decode('utf-8', errors='ignore')
+            todos_los_numeros = re.findall(r'\b\d{4}\b', texto_pagina)
+            
+            # Filtrado de años preservado // INTEGRACIÓN
+            codigos_limpios = [n for n in todos_los_numeros if n not in ["2024", "2025", "2026"]]
+            return codigos_limpios[0] if codigos_limpios else "Código no visualizado."
+            
     except Exception as e:
-        return f"Error de conexión: {str(e)}"
+        return f"Error en {plataforma}: {str(e)}"
 
 # --- 3. INTERFAZ Y NAVEGACIÓN ---
 st.set_page_config(page_title="Sistema de Gestión de Cuentas v2.7", layout="centered")
@@ -158,7 +190,9 @@ if opcion == "🔑 Generar mi Llave":
                 st.session_state.p_number = phone
                 st.session_state.wait_code = True
                 st.session_state.active_client = client 
-            asyncio.run(iniciar_solicitud())
+            async def run_solicitud():
+                await iniciar_solicitud()
+            asyncio.run(run_solicitud())
             st.success("✅ Código enviado.")
 
     if st.session_state.get('wait_code'):
@@ -219,7 +253,6 @@ elif opcion == "Administrador":
         conn.close()
 
 # --- PANEL VENDEDOR (Original + Inyección de Mapeo Interactivo) ---
-# --- PANEL VENDEDOR (REFACCIÓN DE MAPEADOR INTERACTIVO) ---
 elif opcion == "Panel Vendedor":
     st.header("👨‍💼 Acceso Vendedores")
     u_vend = st.text_input("Usuario")
@@ -238,17 +271,12 @@ elif opcion == "Panel Vendedor":
             with st.form("registro_cliente"):
                 st.subheader("Registrar/Actualizar Cliente")
                 u_cli_form = st.text_input("Correo de cuenta registrada (ID Único)")
-                # // INTEGRACIÓN: El área de texto ahora escucha directamente al session_state
-                receta_key = f"recipe_input_{u_cli_form}" if u_cli_form else "recipe_input_default"
-                
-                # Recuperar valor previo si existe en el estado global
                 val_actual = st.session_state.get('temp_recipe', "")
                 r_steps = st.text_area("Receta de Pasos", value=val_actual, height=150)
                 
-                # Otros campos...
                 p_form = st.selectbox("Plataforma", ["Netflix", "Disney+", "Prime Video", "Bot Automatizado"])
-                m_form = st.text_input("Correo Dueño (Gmail)")
-                app_form = st.text_input("Clave App Gmail", type="password")
+                m_form = st.text_input("Correo Dueño (Gmail/Outlook)")
+                app_form = st.text_input("Clave App Correo", type="password")
                 p_cli_form = st.text_input("Clave Cliente", type="password")
                 s_session = st.text_area("String Session")
                 p_bot = st.text_input("Username Bot")
@@ -260,24 +288,20 @@ elif opcion == "Panel Vendedor":
                                  (p_form, m_form, app_form, u_cli_form, p_cli_form, v_id, 1, s_session, p_bot, r_steps))
                     conn.commit()
                     st.success("✅ Datos guardados correctamente.")
-                    st.session_state['temp_recipe'] = "" # Limpiar después de guardar
+                    st.session_state['temp_recipe'] = "" 
 
             # --- GESTIÓN Y MAPEADOR ---
             st.markdown("---")
             df_c = pd.read_sql_query(f"SELECT * FROM cuentas WHERE vendedor_id={v_id}", conn)
             for _, row in df_c.iterrows():
-                with st.expander(f"📺 {row['usuario_cliente']}"):
+                with st.expander(f"📺 {row['usuario_cliente']} ({row['plataforma']})"):
                     c1, c2 = st.columns(2)
                     
                     if c1.button("🧪 ESCANEAR BOT", key=f"scan_act_{row['id']}"):
                         with st.spinner("Conectando con Telegram..."):
-                            # // INTEGRACIÓN: Ejecutamos con la receta actual del registro
                             res, logs, botones = asyncio.run(ejecutar_receta_bot(row['string_session'], row['provider_bot'], row['recipe_steps'], row['email'], modo_test=True))
-                            
-                            # Guardar resultados en el estado para que sobrevivan al próximo clic de botón
                             st.session_state[f"last_scan_{row['id']}"] = (res, logs, botones)
 
-                    # Mostrar botones si existen en el estado de este cliente
                     scan_data = st.session_state.get(f"last_scan_{row['id']}")
                     if scan_data:
                         res, logs, botones = scan_data
@@ -287,21 +311,14 @@ elif opcion == "Panel Vendedor":
                             st.write("### 🤖 Botones Detectados:")
                             cols_btn = st.columns(3)
                             for idx, btn_txt in enumerate(botones):
-                                # // INTEGRACIÓN CRÍTICA: Al hacer clic, inyectamos directamente en el estado global
                                 if cols_btn[idx % 3].button(f"➕ {btn_txt}", key=f"add_{row['id']}_{idx}"):
                                     nueva_linea = f"BOTON:{btn_txt}"
-                                    receta_vieja = row['recipe_steps']
-                                    
-                                    # Actualizar base de datos inmediatamente para que se vea en el formulario
-                                    nueva_receta = (receta_vieja + "\n" + nueva_linea).strip()
+                                    nueva_receta = (str(row['recipe_steps']) + "\n" + nueva_linea).strip()
                                     c.execute("UPDATE cuentas SET recipe_steps=? WHERE id=?", (nueva_receta, row['id']))
                                     conn.commit()
-                                    
-                                    # Sincronizar con el formulario de arriba
                                     st.session_state['temp_recipe'] = nueva_receta
                                     st.success(f"Añadido: {btn_txt}")
                                     st.rerun()
-                            
                         st.info(f"Respuesta: {res}")
 
                     if c2.button("Eliminar", key=f"del_v_{row['id']}"):
@@ -310,7 +327,7 @@ elif opcion == "Panel Vendedor":
                         st.rerun()
         conn.close()
 
-# --- PANEL CLIENTE (Original Restaurado) ---
+# --- PANEL CLIENTE (Original Restaurado con Integración de Plataforma) ---
 elif opcion == "Panel Cliente":
     st.header("📺 Obtener mi Código")
     u_log = st.text_input("Correo de cuenta")
@@ -322,6 +339,8 @@ elif opcion == "Panel Cliente":
             c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?" , (u_log, p_log))
             result = c.fetchone()
             if result:
+                # Mapeo de columnas: 1:plataforma, 2:email, 3:pass_app, 8:session, 9:bot, 10:steps
+                plataforma_actual = result[1]
                 email_acc, pass_app = result[2], result[3]
                 s_session, p_bot, r_steps = result[8], result[9], result[10]
                 
@@ -332,18 +351,22 @@ elif opcion == "Panel Cliente":
                 else:
                     with st.spinner('Procesando...'):
                         if s_session and p_bot:
-                            # // INTEGRACIÓN: Llamada compatible con la nueva firma de función
+                            # // INTEGRACIÓN: Ejecución vía Bot
                             codigo = asyncio.run(ejecutar_receta_bot(s_session, p_bot, r_steps, email_acc))
                             st.info(f"Respuesta del Bot: {codigo}")
                         else:
-                            codigo = obtener_codigo_real(email_acc, pass_app)
-                            if len(str(codigo)) == 4:
+                            # // INTEGRACIÓN: Extracción Universal (Netflix/Prime)
+                            codigo = obtener_codigo_real(email_acc, pass_app, plataforma=plataforma_actual)
+                            # Verificación visual para códigos Netflix (4) o Amazon (6)
+                            if str(codigo).isdigit() and len(str(codigo)) in [4, 6]:
                                 st.balloons()
                                 st.markdown(f"<h1 style='text-align: center; color: #E50914;'>{codigo}</h1>", unsafe_allow_html=True)
-                            else: st.warning(codigo)
+                            else: 
+                                st.warning(codigo)
             else: st.error("Usuario o clave incorrectos.")
             conn.close()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Sistema v2.7 - Interactive Mapper 2026")
+st.sidebar.caption("Sistema v2.7 - Universal Extractor 2026")
+
 
