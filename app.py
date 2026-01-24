@@ -43,7 +43,7 @@ inicializar_db()
 
 # --- NUEVA LÓGICA: PROCESADOR DE RECETA TELEGRAM ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente):
-    # INTEGRACIÓN: Se mantienen las credenciales originales del código base para el motor del bot
+    # INTEGRACIÓN: Credenciales base del sistema
     api_id = 34062718  
     api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
     
@@ -124,62 +124,73 @@ st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
-# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (VERSIÓN VELOZ) ---
+# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (CONEXIÓN PERSISTENTE) ---
 if opcion == "🔑 Generar mi Llave":
     st.header("🛡️ Generador de Sesión Seguro")
-    st.write("Sigue los pasos rápido para que el código no venza.")
-
-    # INTEGRACIÓN: Se unifican credenciales (usando las del original por consistencia)
+    
+    # INTEGRACIÓN: Credenciales unificadas para el generador
     api_id = 34062718 
     api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
 
+    # 1. Entrada de teléfono
     phone = st.text_input("Número (+58...)", key="phone_gen")
     
     if st.button("1. Solicitar Código"):
         if phone:
-            async def solicitar():
-                # INTEGRACIÓN: Uso de StringSession en memoria para velocidad
+            async def iniciar_solicitud():
+                # INTEGRACIÓN: Se crea el cliente y se guarda en session_state para persistencia
                 client = TelegramClient(StringSession(), api_id, api_hash)
                 await client.connect()
                 res = await client.send_code_request(phone)
-                # INTEGRACIÓN: Almacenamiento en session_state para persistencia entre recargas de Streamlit
+                
+                # INTEGRACIÓN: Guardado de metadata y objeto cliente activo
                 st.session_state.p_hash = res.phone_code_hash
                 st.session_state.p_number = phone
                 st.session_state.wait_code = True
-                await client.disconnect()
+                st.session_state.active_client = client 
             
-            asyncio.run(solicitar())
-            st.success("📩 Código enviado. ¡Escríbelo abajo rápido!")
+            asyncio.run(iniciar_solicitud())
+            st.success("✅ Código enviado. ¡Aparecerá en tu Telegram en segundos!")
 
-    # Solo mostramos esto si ya se pidió el código exitosamente
+    # 2. Entrada de código (Solo aparece si el paso 1 tuvo éxito)
     if st.session_state.get('wait_code'):
-        v_code = st.text_input("Ingresa el código de 5 dígitos", key="v_code")
+        st.markdown("---")
+        v_code = st.text_input("Escribe el código de 5 dígitos aquí", key="v_code_input")
         
-        if st.button("2. ¡Generar Llave Ahora!"):
+        if st.button("2. ¡Generar Llave Final!"):
             if v_code:
-                async def validar():
+                async def completar_registro():
                     try:
-                        client = TelegramClient(StringSession(), api_id, api_hash)
-                        await client.connect()
+                        # INTEGRACIÓN: Recuperación del cliente persistente
+                        client = st.session_state.active_client
+                        
+                        if not client.is_connected():
+                            await client.connect()
+                        
+                        # Intentamos el login con los datos persistidos
                         await client.sign_in(
                             st.session_state.p_number, 
                             v_code, 
                             phone_code_hash=st.session_state.p_hash
                         )
+                        
+                        # Generar y guardar la llave en el estado
                         st.session_state.final_str = client.session.save()
-                        await client.disconnect()
-                        st.session_state.wait_code = False # Limpieza de estado
+                        st.session_state.wait_code = False
+                        await client.disconnect() # Cierre seguro tras éxito
                     except Exception as e:
-                        st.error(f"Error: {str(e)}")
+                        st.error(f"Error al validar: {str(e)}")
+                        if 'active_client' in st.session_state: 
+                            await st.session_state.active_client.disconnect()
                 
-                asyncio.run(validar())
+                asyncio.run(completar_registro())
 
-    # INTEGRACIÓN: Renderizado del resultado final
+    # 3. Resultado final persistente
     if 'final_str' in st.session_state:
         st.balloons()
-        st.success("🎯 LLAVE GENERADA EXITOSAMENTE:")
+        st.success("🎯 ¡SESIÓN GENERADA!")
         st.code(st.session_state.final_str)
-        st.warning("Copia este código largo y pégalo en el Panel Vendedor.")
+        st.info("Copia el código de arriba y pégalo en el formulario de vendedor.")
 
 # --- PANEL ADMINISTRADOR (INTACTO) ---
 elif opcion == "Administrador":
