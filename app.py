@@ -18,7 +18,6 @@ MI_API_HASH = 'ca9d5cbc6ce832c6660f949a5567a159'
 def inicializar_db():
     conn = sqlite3.connect('gestion_netflix.db')
     c = conn.cursor()
-    # Tabla Vendedores (Original)
     c.execute('''CREATE TABLE IF NOT EXISTS vendedores 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   usuario TEXT UNIQUE, 
@@ -26,7 +25,6 @@ def inicializar_db():
                   estado INTEGER, 
                   fecha_vencimiento DATE)''')
     
-    # Tabla Cuentas (Extendida con campos de Bot)
     c.execute('''CREATE TABLE IF NOT EXISTS cuentas 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   plataforma TEXT, 
@@ -123,7 +121,7 @@ st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
-# --- PANEL GENERADOR SEGURO (CONEXIÓN PERSISTENTE RECONSTRUIDA) ---
+# --- PANEL GENERADOR SEGURO ---
 if opcion == "🔑 Generar mi Llave":
     st.header("🛡️ Generador de Sesión Seguro")
     phone = st.text_input("Número de Telegram (+58...)", key="phone_gen")
@@ -162,7 +160,7 @@ if opcion == "🔑 Generar mi Llave":
         st.success("🎯 ¡SESIÓN GENERADA!")
         st.code(st.session_state.final_str)
 
-# --- PANEL ADMINISTRADOR (RECONSTRUIDO TOTALMENTE) ---
+# --- PANEL ADMINISTRADOR ---
 elif opcion == "Administrador":
     st.header("🔑 Acceso Administrativo")
     clave_admin = st.text_input("Ingrese Clave Maestra", type="password")
@@ -198,7 +196,7 @@ elif opcion == "Administrador":
                 st.divider()
         conn.close()
 
-# --- PANEL VENDEDOR (EXTENDIDO + FUNCIÓN ELIMINAR CLIENTE) ---
+# --- PANEL VENDEDOR (EXTENDIDO + RECUERDA EL EJEMPLO) ---
 elif opcion == "Panel Vendedor":
     st.header("👨‍💼 Acceso Vendedores")
     u_vend = st.text_input("Usuario")
@@ -222,11 +220,18 @@ elif opcion == "Panel Vendedor":
                     app_form = st.text_input("Clave Aplicación Gmail", type="password")
                     u_cli_form = st.text_input("Correo de cuenta registrada")
                     p_cli_form = st.text_input("Clave para pedir Código", type="password")
+                    
                     st.markdown("---")
                     st.subheader("🤖 Configuración del Bot")
                     s_session = st.text_area("String Session (Llave)")
-                    p_bot = st.text_input("Username del Bot Proveedor")
-                    r_steps = st.text_area("Receta de Pasos")
+                    p_bot = st.text_input("Username del Bot Proveedor (ej: @Bot)")
+                    
+                    # // INTEGRACIÓN: Ejemplo restaurado en la receta
+                    r_steps = st.text_area(
+                        "Receta de Pasos (Uno por línea)", 
+                        placeholder="BOTON:Generar\nENVIAR:CORREO\nESPERAR:5\nENVIAR:Confirmar"
+                    )
+                    
                     if st.form_submit_button("Guardar Cliente"):
                         try:
                             c.execute("""INSERT INTO cuentas (plataforma, email, password_app, usuario_cliente, pass_cliente, vendedor_id, estado, string_session, provider_bot, recipe_steps) 
@@ -235,7 +240,6 @@ elif opcion == "Panel Vendedor":
                             st.success("✅ Cliente registrado.")
                         except: st.error("Error: El cliente ya existe.")
 
-                # // INTEGRACIÓN: Gestión Interactiva de Clientes con Eliminación
                 st.markdown("---")
                 st.subheader("🗑️ Gestionar Mis Clientes")
                 df_c = pd.read_sql_query(f"SELECT usuario_cliente, plataforma, email FROM cuentas WHERE vendedor_id={v_id}", conn)
@@ -244,17 +248,14 @@ elif opcion == "Panel Vendedor":
                         with st.container():
                             c1, c2 = st.columns([4, 1])
                             c1.write(f"📺 **{row['usuario_cliente']}** | {row['plataforma']}")
-                            # INTEGRACIÓN: Botón Eliminar Cliente
                             if c2.button("Eliminar", key=f"del_{row['usuario_cliente']}"):
                                 c.execute("DELETE FROM cuentas WHERE usuario_cliente=? AND vendedor_id=?", (row['usuario_cliente'], v_id))
                                 conn.commit()
-                                st.warning(f"Cliente {row['usuario_cliente']} eliminado.")
                                 st.rerun()
                         st.divider()
-        else: st.error("Credenciales incorrectas.")
         conn.close()
 
-# --- PANEL CLIENTE (EXTENDIDO) ---
+# --- PANEL CLIENTE ---
 elif opcion == "Panel Cliente":
     st.header("📺 Obtener mi Código")
     u_log = st.text_input("Correo de cuenta")
@@ -263,16 +264,14 @@ elif opcion == "Panel Cliente":
         if u_log and p_log:
             conn = sqlite3.connect('gestion_netflix.db')
             c = conn.cursor()
-            c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?", (u_log, p_log))
+            c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?" , (u_log, p_log))
             result = c.fetchone()
             if result:
-                # Columnas: email(2), pass_app(3), vendedor_id(6), session(8), bot(9), steps(10)
                 email_acc, pass_app = result[2], result[3]
                 s_session, p_bot, r_steps = result[8], result[9], result[10]
                 c.execute("SELECT estado, fecha_vencimiento FROM vendedores WHERE id=?", (result[6],))
                 v_status = c.fetchone()
-                v_vence_dt = datetime.strptime(v_status[1], '%Y-%m-%d').date()
-                if v_status[0] == 0 or v_vence_dt < datetime.now().date():
+                if v_status[0] == 0 or datetime.strptime(v_status[1], '%Y-%m-%d').date() < datetime.now().date():
                     st.error("Servicio inactivo.")
                 else:
                     with st.spinner('Procesando...'):
