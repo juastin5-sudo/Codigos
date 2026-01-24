@@ -45,33 +45,62 @@ def inicializar_db():
 
 inicializar_db()
 
-# --- NUEVA LÓGICA: PROCESADOR DE RECETA TELEGRAM ---
+# --- NUEVA LÓGICA: PROCESADOR DE RECETA TELEGRAM (REFACTORIZADO) ---
+# // INTEGRACIÓN: Nueva versión de ejecutar_receta_bot con soporte extendido de comandos
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente):
-    # INTEGRACIÓN: Uso de constantes globales MI_API_ID y MI_API_HASH
+    # INTEGRACIÓN: Credenciales unificadas usando constantes globales
+    api_id = MI_API_ID  
+    api_hash = MI_API_HASH
+    
     try:
-        async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
+        async with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+            # 1. Iniciar interacción
             await client.send_message(bot_username, "/start")
-            await asyncio.sleep(2)
+            await asyncio.sleep(3) # Tiempo de cortesía para que el bot responda
             
             pasos = receta_text.split("\n")
             for paso in pasos:
                 p = paso.strip()
+                if not p: continue # Saltar líneas vacías
+                
+                # REGLA 1: Hacer clic en botones del teclado (Inline Keyboards)
                 if p.startswith("BOTON:"):
-                    btn_text = p.replace("BOTON:", "").strip()
+                    btn_target = p.replace("BOTON:", "").strip()
+                    # Buscamos el último mensaje para ver sus botones
                     msgs = await client.get_messages(bot_username, limit=1)
                     if msgs and msgs[0].reply_markup:
-                        await msgs[0].click(text=btn_text)
-                elif p.startswith("ENVIAR:CORREO"):
+                        # Buscamos el botón por texto exacto o parcial
+                        exito_click = await msgs[0].click(text=btn_target)
+                        if not exito_click:
+                            # Notificación no intrusiva en logs/pantalla
+                            st.warning(f"No se pudo localizar el botón: {btn_target}")
+                    await asyncio.sleep(3) # Esperar reacción del bot
+
+                # REGLA 2: Enviar el correo del cliente
+                elif p == "ENVIAR:CORREO":
                     await client.send_message(bot_username, email_cliente)
+                    await asyncio.sleep(3)
+
+                # REGLA 3: Enviar cualquier otro texto personalizado
+                elif p.startswith("ENVIAR:"):
+                    texto_a_enviar = p.replace("ENVIAR:", "").strip()
+                    await client.send_message(bot_username, texto_a_enviar)
+                    await asyncio.sleep(3)
+
+                # REGLA 4: Pausas personalizadas
                 elif p.startswith("ESPERAR:"):
                     seg = int(re.search(r'\d+', p).group())
                     await asyncio.sleep(seg)
             
+            # 5. Capturar la respuesta final después de todos los pasos
             await asyncio.sleep(2)
-            final_msg = await client.get_messages(bot_username, limit=1)
-            return final_msg[0].text
+            mensajes_finales = await client.get_messages(bot_username, limit=1)
+            if mensajes_finales:
+                return mensajes_finales[0].text
+            return "El bot no devolvió respuesta final."
+            
     except Exception as e:
-        return f"Error Automatización: {str(e)}"
+        return f"Error en el Mapeo: {str(e)}"
 
 # --- 2. LÓGICA DE EXTRACCIÓN DE CÓDIGO (ORIGINAL INTACTA) ---
 def obtener_codigo_real(correo_cuenta, password_app):
@@ -125,25 +154,21 @@ st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
-# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (VERSIÓN DEFINITIVA 2026) ---
+# --- PANEL GENERADOR SEGURO ---
 if opcion == "🔑 Generar mi Llave":
     st.header("🛡️ Generador de Sesión Seguro")
     
-    # INTEGRACIÓN: Uso de constantes globales para asegurar consistencia
     api_id = MI_API_ID 
     api_hash = MI_API_HASH
 
     phone = st.text_input("Tu número de Telegram (+58...)", key="phone_input_final")
 
-    # Paso 1: Solicitar código
     if st.button("Paso 1: Solicitar Código"):
         if phone:
             async def solicitar():
-                # INTEGRACIÓN: Creamos cliente temporal para el handshake inicial
                 client = TelegramClient(StringSession(), api_id, api_hash)
                 await client.connect()
                 res = await client.send_code_request(phone)
-                # INTEGRACIÓN: Persistencia de datos críticos en session_state
                 st.session_state.p_hash = res.phone_code_hash
                 st.session_state.p_phone = phone
                 st.session_state.p_step = 2
@@ -152,7 +177,6 @@ if opcion == "🔑 Generar mi Llave":
             asyncio.run(solicitar())
             st.success("📩 Código enviado. Revisa tu app de Telegram.")
 
-    # Paso 2: Validar código
     if st.session_state.get('p_step') == 2:
         st.markdown("---")
         code = st.text_input("Introduce el código de 5 dígitos", key="code_input_final")
@@ -161,18 +185,9 @@ if opcion == "🔑 Generar mi Llave":
             if code:
                 async def validar():
                     try:
-                        # INTEGRACIÓN: Re-instanciación de cliente para validación final (estilo stateless)
                         client = TelegramClient(StringSession(), api_id, api_hash)
                         await client.connect()
-                        
-                        # INTEGRACIÓN: Firma de sesión con hash persistido
-                        await client.sign_in(
-                            st.session_state.p_phone, 
-                            code, 
-                            phone_code_hash=st.session_state.p_hash
-                        )
-                        
-                        # INTEGRACIÓN: Extracción de StringSession y actualización de estado
+                        await client.sign_in(st.session_state.p_phone, code, phone_code_hash=st.session_state.p_hash)
                         st.session_state.mi_llave_final = client.session.save()
                         st.session_state.p_step = 3
                         await client.disconnect()
@@ -181,7 +196,6 @@ if opcion == "🔑 Generar mi Llave":
                 
                 asyncio.run(validar())
 
-    # Paso 3: Mostrar resultado
     if 'mi_llave_final' in st.session_state:
         st.balloons()
         st.success("🎯 ¡LOGRADO! Aquí tienes tu String Session:")
@@ -272,7 +286,7 @@ elif opcion == "Panel Vendedor":
                     
                     if st.form_submit_button("Guardar Cliente"):
                         try:
-                            # INTEGRACIÓN: Inserción de campos extendidos para bot
+                            # // INTEGRACIÓN: Mapeo correcto de 10 columnas según esquema
                             c.execute("""INSERT INTO cuentas 
                                 (plataforma, email, password_app, usuario_cliente, pass_cliente, vendedor_id, estado, string_session, provider_bot, recipe_steps) 
                                 VALUES (?,?,?,?,?,?,?,?,?,?)""",
@@ -304,6 +318,7 @@ elif opcion == "Panel Cliente":
             result = c.fetchone()
             
             if result:
+                # INTEGRACIÓN: Desempaquetado seguro de columnas (email en index 2, pass_app en 3, session en 8, bot en 9, steps en 10)
                 email_acc, pass_app = result[2], result[3]
                 s_session, p_bot, r_steps = result[8], result[9], result[10]
                 
@@ -316,7 +331,6 @@ elif opcion == "Panel Cliente":
                     st.error("Servicio temporalmente inactivo.")
                 else:
                     with st.spinner('Procesando...'):
-                        # INTEGRACIÓN: Lógica de despacho dual (Telegram Bot o Gmail IMAP)
                         if s_session and p_bot:
                             codigo = asyncio.run(ejecutar_receta_bot(s_session, p_bot, r_steps, email_acc))
                             st.info(f"Respuesta del Bot: {codigo}")
