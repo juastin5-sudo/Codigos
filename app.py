@@ -167,8 +167,8 @@ elif opcion == "Panel Vendedor":
                     p_form = st.selectbox("Plataforma", ["Netflix", "Disney+", "Prime Video"])
                     m_form = st.text_input("Correo Netflix (Dueño)")
                     app_form = st.text_input("Clave Aplicación Gmail", type="password")
-                    u_cli_form = st.text_input("Usuario para Cliente")
-                    p_cli_form = st.text_input("Clave para Cliente", type="password")
+                    u_cli_form = st.text_input("Correo de cuenta registrada")
+                    p_cli_form = st.text_input("Clave para pedir Código", type="password")
                     
                     if st.form_submit_button("Guardar Cliente"):
                         try:
@@ -191,8 +191,8 @@ elif opcion == "Panel Cliente":
     st.header("📺 Obtener mi Código")
     st.info("Ingresa los datos proporcionados por tu vendedor.")
     
-    u_log = st.text_input("Usuario Cliente")
-    p_log = st.text_input("Contraseña Cliente", type="password")
+    u_log = st.text_input("Correo de cuenta")
+    p_log = st.text_input("Clave para pedir Código", type="password")
     
     if st.button("GENERAR CÓDIGO"):
         if u_log and p_log:
