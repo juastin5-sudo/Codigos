@@ -44,8 +44,8 @@ inicializar_db()
 # --- NUEVA LÓGICA: PROCESADOR DE RECETA TELEGRAM ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente):
     # Nota: Necesitas tu API_ID y API_HASH de my.telegram.org
-    api_id = 123456  
-    api_hash = 'tu_api_hash'
+    api_id = 34062718  
+    api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
     
     try:
         async with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
@@ -272,3 +272,4 @@ elif opcion == "Panel Cliente":
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Sistema v2.0 - 2026")
+
