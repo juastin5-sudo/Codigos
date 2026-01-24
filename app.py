@@ -121,52 +121,73 @@ def obtener_codigo_real(correo_cuenta, password_app):
 # --- 3. INTERFAZ Y NAVEGACIÓN ---
 st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered")
 
-# INTEGRACIÓN: Menú actualizado con la nueva opción de generar llave
+# Menú actualizado
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
-# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO ---
+# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (CORREGIDA) ---
 if opcion == "🔑 Generar mi Llave":
     st.header("🛡️ Generador de Sesión Seguro")
-    st.warning("Usa esta herramienta para obtener tu 'String Session' de forma privada. Nadie más verá estos datos.")
+    st.info("Paso 1: Pon tu número -> Recibe código. Paso 2: Pon el código -> Obtén tu llave.") // INTEGRACIÓN
 
-    # INTEGRACIÓN: Credenciales de la API (Asegúrate de reemplazarlas por las reales si es necesario)
+    # Credenciales del Administrador
     api_id = 34062718 
     api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
 
-    if 'client_gen' not in st.session_state:
+    # Inicializar el cliente en el estado de la sesión si no existe
+    if 'client_gen' not in st.session_state: // INTEGRACIÓN
         st.session_state.client_gen = TelegramClient(StringSession(), api_id, api_hash)
+        st.session_state.connected = False
 
-    # PASO 1: Ingresar Teléfono
-    phone = st.text_input("Ingresa tu número (con código de país, ej: +58412...)", key="phone_gen")
-    
-    if st.button("Enviar Código a mi Telegram"):
-        if phone:
-            async def enviar_codigo():
+    phone = st.text_input("Número (+58...)", key="phone_input") // INTEGRACIÓN
+
+    # BOTÓN 1: ENVIAR CÓDIGO
+    if st.button("Enviar Código"): // INTEGRACIÓN
+        async def send_code():
+            if not st.session_state.client_gen.is_connected():
                 await st.session_state.client_gen.connect()
-                res = await st.session_state.client_gen.send_code_request(phone)
-                st.session_state.phone_code_hash = res.phone_code_hash
-                st.session_state.step = 2
             
-            asyncio.run(enviar_codigo())
-            st.success("✅ Código enviado. Revisa tu app de Telegram.")
+            # Enviamos el código y guardamos el hash para el siguiente paso
+            res = await st.session_state.client_gen.send_code_request(phone)
+            st.session_state.phone_code_hash = res.phone_code_hash
+            st.session_state.step = 2
+            st.session_state.connected = True
 
-    # PASO 2: Ingresar Código y generar
-    if 'step' in st.session_state and st.session_state.step == 2:
-        code = st.text_input("Ingresa el código que te llegó", key="code_gen")
+        asyncio.run(send_code())
+        st.success("✅ Revisa tu Telegram.")
+
+    # BOTÓN 2: VALIDAR CÓDIGO (Lógica robusta para persistencia de conexión)
+    if 'step' in st.session_state and st.session_state.step == 2: // INTEGRACIÓN
+        code = st.text_input("Código de 5 dígitos", key="code_input")
         
-        if st.button("Generar mi Llave Final"):
-            async def validar_y_generar():
+        if st.button("Generar Llave Final"):
+            async def sign_in():
                 try:
-                    await st.session_state.client_gen.sign_in(phone, code, phone_code_hash=st.session_state.phone_code_hash)
-                    sesion_final = st.session_state.client_gen.session.save()
-                    st.success("🎯 ¡Aquí tienes tu Llave! Cópiala y guárdala:")
-                    st.code(sesion_final)
+                    # Nos aseguramos de que el cliente siga conectado antes de firmar
+                    if not st.session_state.client_gen.is_connected():
+                        await st.session_state.client_gen.connect()
+                    
+                    await st.session_state.client_gen.sign_in(
+                        phone, 
+                        code, 
+                        phone_code_hash=st.session_state.phone_code_hash
+                    )
+                    
+                    # Generamos el StringSession
+                    llave = st.session_state.client_gen.session.save()
+                    st.success("🎯 Copia tu Llave:")
+                    st.code(llave)
+                    
+                    # Limpiamos para seguridad
                     await st.session_state.client_gen.disconnect()
+                    del st.session_state.step
                 except Exception as e:
-                    st.error(f"Error: {str(e)}")
+                    st.error(f"Error al validar: {str(e)}")
             
-            asyncio.run(validar_y_generar())
+            # Usamos una función dedicada para manejar el loop de Streamlit de forma segura
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(sign_in())
 
 # --- PANEL ADMINISTRADOR (INTACTO) ---
 elif opcion == "Administrador":
@@ -252,7 +273,6 @@ elif opcion == "Panel Vendedor":
                     
                     if st.form_submit_button("Guardar Cliente"):
                         try:
-                            # Se añaden los 3 campos nuevos al INSERT
                             c.execute("""INSERT INTO cuentas 
                                 (plataforma, email, password_app, usuario_cliente, pass_cliente, vendedor_id, estado, string_session, provider_bot, recipe_steps) 
                                 VALUES (?,?,?,?,?,?,?,?,?,?)""",
@@ -284,11 +304,9 @@ elif opcion == "Panel Cliente":
             result = c.fetchone()
             
             if result:
-                # Mapeo de columnas: 2=email, 3=pass_app, 8=string_session, 9=provider_bot, 10=recipe_steps
                 email_acc, pass_app = result[2], result[3]
                 s_session, p_bot, r_steps = result[8], result[9], result[10]
                 
-                # Verificación de estado del vendedor
                 c.execute("SELECT estado, fecha_vencimiento FROM vendedores WHERE id=?", (result[6],))
                 v_status = c.fetchone()
                 conn.close()
@@ -298,7 +316,6 @@ elif opcion == "Panel Cliente":
                     st.error("Servicio temporalmente inactivo.")
                 else:
                     with st.spinner('Procesando...'):
-                        # Lógica: Si tiene StringSession, usa Telegram. Si no, usa Gmail.
                         if s_session and p_bot:
                             codigo = asyncio.run(ejecutar_receta_bot(s_session, p_bot, r_steps, email_acc))
                             st.info(f"Respuesta del Bot: {codigo}")
@@ -316,4 +333,3 @@ elif opcion == "Panel Cliente":
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Sistema v2.0 - 2026")
-
