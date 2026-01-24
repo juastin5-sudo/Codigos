@@ -22,7 +22,7 @@ def inicializar_db():
                   estado INTEGER, 
                   fecha_vencimiento DATE)''')
     
-    # Tabla Cuentas (Extendida con los 3 campos nuevos: string_session, provider_bot, recipe_steps)
+    # Tabla Cuentas (Extendida con los 3 campos nuevos)
     c.execute('''CREATE TABLE IF NOT EXISTS cuentas 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   plataforma TEXT, 
@@ -43,7 +43,6 @@ inicializar_db()
 
 # --- NUEVA LÓGICA: PROCESADOR DE RECETA TELEGRAM ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente):
-    # Nota: Necesitas tu API_ID y API_HASH de my.telegram.org
     api_id = 34062718  
     api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
     
@@ -121,69 +120,65 @@ def obtener_codigo_real(correo_cuenta, password_app):
 # --- 3. INTERFAZ Y NAVEGACIÓN ---
 st.set_page_config(page_title="Sistema de Gestión de Cuentas", layout="centered")
 
-# Menú actualizado
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador", "🔑 Generar mi Llave"]
 opcion = st.sidebar.selectbox("Seleccione un Panel", menu)
 
-# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (CORREGIDA) ---
+# --- INTEGRACIÓN: LÓGICA DEL GENERADOR SEGURO (NUEVA VERSIÓN) ---
 if opcion == "🔑 Generar mi Llave":
     st.header("🛡️ Generador de Sesión Seguro")
-    st.info("Paso 1: Pon tu número -> Recibe código. Paso 2: Pon el código -> Obtén tu llave.") # INTEGRACIÓN
-
-    # Credenciales del Administrador
+    
+    # INTEGRACIÓN: Credenciales de la Modificación
     api_id = 34062718 
     api_hash = 'ca9d5cbc6ce832c6660f949a5567a159'
 
-    # Inicializar el cliente en el estado de la sesión si no existe
-    if 'client_gen' not in st.session_state: # INTEGRACIÓN
-        st.session_state.client_gen = TelegramClient(StringSession(), api_id, api_hash)
-        st.session_state.connected = False
+    # INTEGRACIÓN: Campos de entrada y estructura de columnas
+    phone = st.text_input("Número (+58...)", key="phone_input")
+    
+    step_col1, step_col2 = st.columns(2)
 
-    phone = st.text_input("Número (+58...)", key="phone_input") # INTEGRACIÓN
+    with step_col1:
+        if st.button("1. Solicitar Código"):
+            if phone:
+                async def enviar_solicitud():
+                    # Creamos un cliente temporal solo para el envío
+                    client = TelegramClient(StringSession(), api_id, api_hash)
+                    await client.connect()
+                    res = await client.send_code_request(phone)
+                    # Guardamos los datos necesarios en la sesión de Streamlit
+                    st.session_state.phone_code_hash = res.phone_code_hash
+                    st.session_state.can_verify = True
+                    await client.disconnect()
+                
+                asyncio.run(enviar_solicitud())
+                st.success("📩 Código enviado a tu Telegram.")
+            else:
+                st.error("Pon tu número primero.")
 
-    # BOTÓN 1: ENVIAR CÓDIGO
-    if st.button("Enviar Código"): # INTEGRACIÓN
-        async def send_code():
-            if not st.session_state.client_gen.is_connected():
-                await st.session_state.client_gen.connect()
-            
-            # Enviamos el código y guardamos el hash para el siguiente paso
-            res = await st.session_state.client_gen.send_code_request(phone)
-            st.session_state.phone_code_hash = res.phone_code_hash
-            st.session_state.step = 2
-            st.session_state.connected = True
+    if st.session_state.get('can_verify'):
+        with step_col2:
+            code = st.text_input("Código de 5 dígitos", key="code_val")
+            if st.button("2. Generar Llave"):
+                async def validar_login():
+                    try:
+                        # Creamos un nuevo cliente para la validación final
+                        client = TelegramClient(StringSession(), api_id, api_hash)
+                        await client.connect()
+                        # Iniciamos sesión
+                        await client.sign_in(phone, code, phone_code_hash=st.session_state.phone_code_hash)
+                        # Obtenemos la llave
+                        string_final = client.session.save()
+                        st.session_state.mi_llave_final = string_final
+                        await client.disconnect()
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
 
-        asyncio.run(send_code())
-        st.success("✅ Revisa tu Telegram.")
+                asyncio.run(validar_login())
 
-    # BOTÓN 2: VALIDAR CÓDIGO
-    if 'step' in st.session_state and st.session_state.step == 2: # INTEGRACIÓN
-        code = st.text_input("Código de 5 dígitos", key="code_input")
-        
-        if st.button("Generar Llave Final"):
-            async def sign_in():
-                try:
-                    if not st.session_state.client_gen.is_connected():
-                        await st.session_state.client_gen.connect()
-                    
-                    await st.session_state.client_gen.sign_in(
-                        phone, 
-                        code, 
-                        phone_code_hash=st.session_state.phone_code_hash
-                    )
-                    
-                    llave = st.session_state.client_gen.session.save()
-                    st.success("🎯 Copia tu Llave:")
-                    st.code(llave)
-                    
-                    await st.session_state.client_gen.disconnect()
-                    del st.session_state.step
-                except Exception as e:
-                    st.error(f"Error al validar: {str(e)}")
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(sign_in())
+    # INTEGRACIÓN: Mostrar resultado persistente
+    if 'mi_llave_final' in st.session_state:
+        st.success("🎯 ¡Logrado! Aquí tienes tu String Session:")
+        st.code(st.session_state.mi_llave_final)
+        st.balloons()
 
 # --- PANEL ADMINISTRADOR (INTACTO) ---
 elif opcion == "Administrador":
@@ -329,4 +324,3 @@ elif opcion == "Panel Cliente":
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Sistema v2.0 - 2026")
-
