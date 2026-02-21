@@ -10,44 +10,39 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-# --- INTEGRACIÓN: Constantes Globales preservadas ---
+# --- CONSTANTES ---
 MI_API_ID = 34062718  
 MI_API_HASH = 'ca9d5cbc6ce832c6660f949a5567a159'
 
-# --- 1. CONFIGURACIÓN DE BASE DE DATOS ---
+# --- 1. CONFIGURACIÓN DE BASE DE DATOS (V4) ---
 def inicializar_db():
-    conn = sqlite3.connect('gestion_netflix.db')
+    conn = sqlite3.connect('gestion_netflix_v4.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS vendedores 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  usuario TEXT UNIQUE, 
-                  clave TEXT, 
-                  estado INTEGER, 
-                  fecha_vencimiento DATE)''')
+                  usuario TEXT UNIQUE, clave TEXT, estado INTEGER, fecha_vencimiento DATE)''')
     
+    # Fuentes: Correos Madre (Con filtros de seguridad)
     c.execute('''CREATE TABLE IF NOT EXISTS correos_madre (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 vendedor_id INTEGER,
-                 correo_imap TEXT,
-                 password_app TEXT,
-                 servidor_imap TEXT DEFAULT 'imap.gmail.com',
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, vendedor_id INTEGER,
+                 correo_imap TEXT, password_app TEXT, servidor_imap TEXT DEFAULT 'imap.gmail.com',
+                 filtro_login INTEGER DEFAULT 1, filtro_temporal INTEGER DEFAULT 1,
                  FOREIGN KEY (vendedor_id) REFERENCES vendedores(id))''')
 
+    # Fuentes: Bots de Telegram
+    c.execute('''CREATE TABLE IF NOT EXISTS bots_telegram (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, vendedor_id INTEGER,
+                 bot_username TEXT, string_session TEXT, recipe_steps TEXT,
+                 FOREIGN KEY (vendedor_id) REFERENCES vendedores(id))''')
+
+    # CRM: Clientes finales
     c.execute('''CREATE TABLE IF NOT EXISTS cuentas 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  plataforma TEXT, 
-                  email TEXT, 
-                  password_app TEXT, 
-                  usuario_cliente TEXT UNIQUE, 
-                  pass_cliente TEXT, 
-                  vendedor_id INTEGER,
-                  estado INTEGER,
-                  string_session TEXT,
-                  provider_bot TEXT,
-                  recipe_steps TEXT,
-                  id_madre INTEGER,
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, plataforma TEXT, email TEXT, 
+                  usuario_cliente TEXT UNIQUE, pass_cliente TEXT, vendedor_id INTEGER,
+                  estado_pago INTEGER DEFAULT 1, id_madre INTEGER, id_bot INTEGER,
                   FOREIGN KEY(vendedor_id) REFERENCES vendedores(id),
-                  FOREIGN KEY(id_madre) REFERENCES correos_madre(id))''')
+                  FOREIGN KEY(id_madre) REFERENCES correos_madre(id),
+                  FOREIGN KEY(id_bot) REFERENCES bots_telegram(id))''')
     conn.commit()
     conn.close()
 
@@ -103,15 +98,16 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
         error_msg = f"Error en el Mapeo: {str(e)}"
         return (error_msg, logs, []) if modo_test else error_msg
 
-# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) ---
-def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv="imap.gmail.com"):
+# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTROS ---
+def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
         criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
-        if not mensajes[0]: return f"Correo no hallado para {email_cliente_final}"
+        if not mensajes[0]: return "Correo no hallado."
+        
         ultimo_id = mensajes[0].split()[-1]
         res, datos = mail.fetch(ultimo_id, '(RFC822)')
         msg = email.message_from_bytes(datos[0][1])
@@ -123,6 +119,16 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         else:
             cuerpo = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
+        # --- APLICACIÓN DE FILTROS DEL VENDEDOR ---
+        es_login = "inicio de sesión" in cuerpo.lower() or "nuevo dispositivo" in cuerpo.lower()
+        es_temporal = "temporal" in cuerpo.lower() or "viaje" in cuerpo.lower() or "travel" in cuerpo.lower()
+
+        if es_login and not filtro_login:
+            return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
+        if es_temporal and not filtro_temporal:
+            return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
+
+        # --- EXTRACCIÓN ---
         if plataforma == "Prime Video":
             match = re.search(r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})', cuerpo, re.IGNORECASE)
             return match.group(1) if match else "Código Prime no detectado"
@@ -134,133 +140,144 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             nums = [n for n in re.findall(r'\b\d{4}\b', resp.text) if n not in ["2024", "2025", "2026"]]
             return nums[0] if nums else "Código Netflix no hallado"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error de conexión IMAP: {str(e)}"
 
-# --- INTERFAZ ---
-st.set_page_config(page_title="Gestión de Cuentas v3.0", layout="centered")
+# --- INTERFAZ DE USUARIO ---
+st.set_page_config(page_title="Gestión de Cuentas v4.0", layout="centered")
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador"]
-opcion = st.sidebar.selectbox("Panel", menu)
+opcion = st.sidebar.selectbox("Navegación", menu)
 
-# // INTEGRACIÓN: Panel Administrador Refactorizado
 if opcion == "Administrador":
     st.header("🔑 Panel de Control Maestro")
-    # Verificación de acceso
     if st.text_input("Clave Maestra", type="password") == "merida2026":
-        
-        # Layout de dos columnas: Registro y Listado
         col_crear, col_lista = st.columns([1, 2])
         
         with col_crear:
             st.subheader("➕ Registrar Vendedor")
             nv = st.text_input("Usuario")
-            cv = st.text_input("Contraseña") # // INTEGRACIÓN: Campo visible para password
+            cv = st.text_input("Contraseña")
             if st.button("Guardar Vendedor"):
-                conn = sqlite3.connect('gestion_netflix.db')
+                conn = sqlite3.connect('gestion_netflix_v4.db')
                 try:
-                    # Cálculo automático de 30 días de servicio
                     venc = (datetime.now() + timedelta(days=30)).date()
-                    conn.execute("INSERT INTO vendedores (usuario, clave, estado, fecha_vencimiento) VALUES (?,?,?,?)", 
-                                 (nv, cv, 1, venc))
+                    conn.execute("INSERT INTO vendedores (usuario, clave, estado, fecha_vencimiento) VALUES (?,?,?,?)", (nv, cv, 1, venc))
                     conn.commit()
-                    st.success(f"Vendedor {nv} registrado con éxito.")
-                except: st.error("El usuario ya existe.")
+                    st.success("Vendedor guardado.")
+                except: st.error("Usuario ya existe.")
                 conn.close()
 
         with col_lista:
-            st.subheader("👥 Vendedores Registrados")
-            conn = sqlite3.connect('gestion_netflix.db')
-            c = conn.cursor()
-            # // INTEGRACIÓN: Consulta extendida para credenciales y estado
-            c.execute("SELECT id, usuario, clave, estado, fecha_vencimiento FROM vendedores")
-            vendedores = c.fetchall()
-            
-            if not vendedores:
-                st.info("No hay vendedores registrados aún.")
-            else:
-                for v in vendedores:
-                    with st.container():
-                        # Lógica visual de estado
-                        status_color = "green" if v[3] == 1 else "red"
-                        status_text = "ACTIVO" if v[3] == 1 else "INACTIVO"
-                        
-                        # Fila de datos del vendedor
-                        c1, c2, c3, c4 = st.columns([1, 1, 1, 0.5])
-                        c1.write(f"**ID:** {v[0]} | **User:** `{v[1]}`")
-                        c2.write(f"**Pass:** `{v[2]}`") # // INTEGRACIÓN: Visualización de clave
-                        c3.write(f"📅 Vence: {v[4]}")
-                        
-                        # // INTEGRACIÓN: Botón dinámico de Activación/Desactivación
-                        btn_label = "🔴 Desactivar" if v[3] == 1 else "🟢 Activar"
-                        if c4.button(btn_label, key=f"v_stat_{v[0]}"):
-                            nuevo_est = 0 if v[3] == 1 else 1
-                            c.execute("UPDATE vendedores SET estado=? WHERE id=?", (nuevo_est, v[0]))
-                            conn.commit()
-                            st.rerun()
-                        
-                        # Separador visual con color de estado
-                        st.markdown(f"<div style='height:2px; background-color:{status_color}; margin-bottom:15px;'></div>", unsafe_allow_html=True)
+            st.subheader("👥 Vendedores")
+            conn = sqlite3.connect('gestion_netflix_v4.db')
+            vendedores = conn.execute("SELECT * FROM vendedores").fetchall()
+            for v in vendedores:
+                c1, c2, c3 = st.columns([2, 2, 1])
+                c1.write(f"**{v[1]}** (Pass: `{v[2]}`)")
+                c2.write("🟢 Activo" if v[3] else "🔴 Inactivo")
+                if c3.button("Estado", key=f"v_{v[0]}"):
+                    conn.execute("UPDATE vendedores SET estado=? WHERE id=?", (0 if v[3] else 1, v[0]))
+                    conn.commit()
+                    st.rerun()
             conn.close()
 
 elif opcion == "Panel Vendedor":
-    st.header("👨‍💼 Vendedores")
+    st.header("👨‍💼 Portal de Vendedores")
     u_v, p_v = st.text_input("Usuario"), st.text_input("Clave", type="password")
+    
     if u_v and p_v:
-        conn = sqlite3.connect('gestion_netflix.db')
+        conn = sqlite3.connect('gestion_netflix_v4.db')
         c = conn.cursor()
-        c.execute("SELECT id, estado FROM vendedores WHERE usuario=? AND clave=?", (u_v, p_v))
-        vend = c.fetchone()
+        vend = c.execute("SELECT id, estado FROM vendedores WHERE usuario=? AND clave=?", (u_v, p_v)).fetchone()
+        
         if vend and vend[1] == 1:
             v_id = vend[0]
             
-            with st.expander("📧 Configurar Buzones Madre (Solo para método Correo)"):
+            # --- SEPARACIÓN EN PESTAÑAS (FUENTES VS CLIENTES) ---
+            tab_fuentes, tab_clientes = st.tabs(["⚙️ Fuentes de Extracción", "👥 Gestión de Clientes"])
+            
+            with tab_fuentes:
+                st.subheader("1. Mis Correos (Gmail / Dominios Privados)")
                 with st.form("f_madre"):
-                    me, mp, ms = st.text_input("Correo IMAP"), st.text_input("Clave App", type="password"), st.text_input("Servidor", value="imap.gmail.com")
-                    if st.form_submit_button("Guardar Buzón"):
-                        c.execute("INSERT INTO correos_madre (vendedor_id, correo_imap, password_app, servidor_imap) VALUES (?,?,?,?)", (v_id, me, mp, ms))
+                    tipo_correo = st.radio("Tipo de proveedor:", ["Gmail / Google Workspace", "Webmail (Dominio Privado / cPanel)", "Outlook / Hotmail"])
+                    
+                    me = st.text_input("Correo Electrónico")
+                    mp = st.text_input("Contraseña (o Clave de Aplicación)", type="password")
+                    
+                    # Campo dinámico para el servidor IMAP
+                    servidor_personalizado = "imap.gmail.com"
+                    if tipo_correo == "Webmail (Dominio Privado / cPanel)":
+                        st.info("💡 Para dominios privados, el servidor suele ser 'mail.tudominio.com'")
+                        servidor_personalizado = st.text_input("Servidor IMAP", value="mail.tudominio.com")
+                    elif tipo_correo == "Outlook / Hotmail":
+                        servidor_personalizado = "outlook.office365.com"
+
+                    st.write("**Filtros de Seguridad:**")
+                    f_log = st.checkbox("Permitir entregar códigos de Nuevo Inicio de Sesión", value=True)
+                    f_tmp = st.checkbox("Permitir entregar códigos de Acceso Temporal / Viaje", value=True)
+                    
+                    if st.form_submit_button("Guardar Correo Madre"):
+                        c.execute("INSERT INTO correos_madre (vendedor_id, correo_imap, password_app, servidor_imap, filtro_login, filtro_temporal) VALUES (?,?,?,?,?,?)", 
+                                  (v_id, me, mp, servidor_personalizado, int(f_log), int(f_tmp)))
                         conn.commit()
-
-            st.subheader("Registrar Nuevo Cliente")
-            metodo = st.radio("Método de Extracción:", ["Buzón Madre (Correo)", "Bot de Telegram"], horizontal=True)
-            
-            with st.form("f_cliente"):
-                u_cli = st.text_input("Correo de la Cuenta (Netflix/Disney/etc)")
-                p_cli = st.text_input("Clave para el Cliente", type="password")
-                plat = st.selectbox("Plataforma", ["Netflix", "Prime Video", "Disney+", "Otros"])
+                        st.success("Correo Madre guardado.")
                 
-                id_m, s_sess, p_bot, r_steps = None, None, None, None
-                
-                if metodo == "Buzón Madre (Correo)":
-                    c.execute("SELECT id, correo_imap FROM correos_madre WHERE vendedor_id=?", (v_id,))
-                    madres = c.fetchall()
-                    op_madre = {m[1]: m[0] for m in madres}
-                    m_sel = st.selectbox("Selecciona el Buzón Madre donde llega el correo", options=list(op_madre.keys()))
-                    id_m = op_madre.get(m_sel)
-                else:
+                st.subheader("2. Mis Bots de Telegram")
+                with st.form("f_bot"):
+                    b_user = st.text_input("Username del Bot (@ejemplo_bot)")
                     s_sess = st.text_area("String Session (Llave)")
-                    p_bot = st.text_input("Username del Bot (@ejemplo_bot)")
-                    val_rec = st.session_state.get('temp_recipe', "")
-                    r_steps = st.text_area("Receta de Pasos", value=val_rec)
+                    r_steps = st.text_area("Receta de Pasos")
+                    if st.form_submit_button("Guardar Bot"):
+                        c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, string_session, recipe_steps) VALUES (?,?,?,?)", 
+                                  (v_id, b_user, s_sess, r_steps))
+                        conn.commit()
+                        st.success("Bot guardado.")
 
-                if st.form_submit_button("Guardar Cliente"):
-                    c.execute("""INSERT OR REPLACE INTO cuentas 
-                                 (plataforma, email, password_app, usuario_cliente, pass_cliente, vendedor_id, estado, string_session, provider_bot, recipe_steps, id_madre) 
-                                 VALUES (?,?,?,?,?,?,?,?,?,?,?)""", 
-                                 (plat, u_cli, "EXTRACCION_ACTIVA", u_cli, p_cli, v_id, 1, s_sess, p_bot, r_steps, id_m))
-                    conn.commit()
-                    st.success("Guardado")
-            
-            st.markdown("---")
-            df_c = pd.read_sql_query(f"SELECT * FROM cuentas WHERE vendedor_id={v_id}", conn)
-            for _, row in df_c.iterrows():
-                with st.expander(f"📺 {row['usuario_cliente']} [{ 'BOT' if row['provider_bot'] else 'CORREO' }]"):
-                    if row['provider_bot'] and st.button("🧪 Escanear Bot", key=f"sc_{row['id']}"):
-                        res, logs, btns = asyncio.run(ejecutar_receta_bot(row['string_session'], row['provider_bot'], row['recipe_steps'], row['email'], True))
-                        for l in logs: st.caption(l)
-                        st.info(res)
-                    if st.button("Eliminar", key=f"del_{row['id']}"):
-                        c.execute("DELETE FROM cuentas WHERE id=?", (row['id'],))
+            with tab_clientes:
+                st.subheader("➕ Añadir Nuevo Cliente")
+                with st.form("f_cliente"):
+                    u_cli = st.text_input("Correo de Streaming (Ej: netflix@cliente.com)")
+                    plat = st.selectbox("Plataforma", ["Netflix", "Prime Video", "Disney+", "Otros"])
+                    
+                    # El vendedor le crea un acceso a su cliente
+                    col1, col2 = st.columns(2)
+                    c_user = col1.text_input("Usuario para el panel web")
+                    c_pass = col2.text_input("Clave para el panel web")
+                    
+                    # Asignar la fuente de extracción
+                    madres = c.execute("SELECT id, correo_imap FROM correos_madre WHERE vendedor_id=?", (v_id,)).fetchall()
+                    bots = c.execute("SELECT id, bot_username FROM bots_telegram WHERE vendedor_id=?", (v_id,)).fetchall()
+                    
+                    opciones_fuente = {"Ninguna": (None, None)}
+                    for m in madres: opciones_fuente[f"📧 Correo: {m[1]}"] = (m[0], "madre")
+                    for b in bots: opciones_fuente[f"🤖 Bot: {b[1]}"] = (b[0], "bot")
+                    
+                    sel_fuente = st.selectbox("¿De dónde sacará el código este cliente?", options=list(opciones_fuente.keys()))
+                    
+                    if st.form_submit_button("Registrar Cliente"):
+                        id_ref, tipo = opciones_fuente[sel_fuente]
+                        id_m = id_ref if tipo == "madre" else None
+                        id_b = id_ref if tipo == "bot" else None
+                        
+                        try:
+                            c.execute("""INSERT INTO cuentas (plataforma, email, usuario_cliente, pass_cliente, vendedor_id, id_madre, id_bot) 
+                                         VALUES (?,?,?,?,?,?,?)""", (plat, u_cli, c_user, c_pass, v_id, id_m, id_b))
+                            conn.commit()
+                            st.success("Cliente registrado con éxito.")
+                        except: st.error("Ese usuario web ya existe.")
+                
+                st.markdown("---")
+                st.subheader("📋 Mis Clientes (Control de Pagos)")
+                clientes = c.execute("SELECT id, usuario_cliente, email, plataforma, estado_pago FROM cuentas WHERE vendedor_id=?", (v_id,)).fetchall()
+                for cli in clientes:
+                    cc1, cc2, cc3 = st.columns([2, 2, 1])
+                    cc1.write(f"👤 **{cli[1]}** | 📺 {cli[3]}")
+                    cc2.write(f"📧 `{cli[2]}`")
+                    btn_pago = "🟢 Al día" if cli[4] else "🔴 Pago Vencido"
+                    if cc3.button(btn_pago, key=f"pago_{cli[0]}"):
+                        c.execute("UPDATE cuentas SET estado_pago=? WHERE id=?", (0 if cli[4] else 1, cli[0]))
                         conn.commit()
                         st.rerun()
+
         else:
             if vend and vend[1] == 0: st.error("Cuenta de vendedor desactivada.")
             elif u_v: st.error("Credenciales incorrectas.")
@@ -268,24 +285,43 @@ elif opcion == "Panel Vendedor":
 
 elif opcion == "Panel Cliente":
     st.header("📺 Obtener mi Código")
-    u_l, p_l = st.text_input("Correo de cuenta"), st.text_input("Clave", type="password")
-    if st.button("GENERAR CÓDIGO"):
-        conn = sqlite3.connect('gestion_netflix.db')
+    u_l, p_l = st.text_input("Mi Usuario"), st.text_input("Mi Clave", type="password")
+    
+    if st.button("Buscar Código"):
+        conn = sqlite3.connect('gestion_netflix_v4.db')
         c = conn.cursor()
-        c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?" , (u_l, p_l))
-        res = c.fetchone()
+        res = c.execute("SELECT * FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?", (u_l, p_l)).fetchone()
+        
         if res:
-            with st.spinner('Extrayendo...'):
-                if res[8]: # Método BOT
-                    codigo = asyncio.run(ejecutar_receta_bot(res[8], res[9], res[10], res[2]))
-                    st.info(f"Respuesta: {codigo}")
-                elif res[11]: # Método CORREO
-                    c.execute("SELECT correo_imap, password_app, servidor_imap FROM correos_madre WHERE id=?", (res[11],))
-                    dm = c.fetchone()
-                    codigo = obtener_codigo_centralizado(dm[0], dm[1], res[2], res[1], dm[2])
-                    if str(codigo).isdigit():
-                        st.balloons()
-                        st.markdown(f"<h1 style='text-align: center; color: #E50914;'>{codigo}</h1>", unsafe_allow_html=True)
-                    else: st.warning(codigo)
-        else: st.error("Datos incorrectos")
+            if res[6] == 0: # Control de pagos
+                st.error("🚫 Tu suscripción está inactiva. Contacta a tu vendedor para renovar el pago.")
+            else:
+                # --- VISTA PREVIA ---
+                st.info(f"🔎 Buscando código para la cuenta: **{res[2]}** ({res[1]})")
+                
+                with st.spinner('Conectando con el servidor...'):
+                    codigo = None
+                    if res[8]: # Método Bot Telegram
+                        bot = c.execute("SELECT string_session, bot_username, recipe_steps FROM bots_telegram WHERE id=?", (res[8],)).fetchone()
+                        codigo = asyncio.run(ejecutar_receta_bot(bot[0], bot[1], bot[2], res[2]))
+                    
+                    elif res[7]: # Método Correo Madre
+                        madre = c.execute("SELECT correo_imap, password_app, servidor_imap, filtro_login, filtro_temporal FROM correos_madre WHERE id=?", (res[7],)).fetchone()
+                        codigo = obtener_codigo_centralizado(madre[0], madre[1], res[2], res[1], madre[2], madre[3], madre[4])
+                    
+                    else:
+                        st.warning("Tu cuenta no tiene una fuente asignada. Contacta al vendedor.")
+                    
+                    if codigo:
+                        st.markdown("---")
+                        if "BLOQUEADO" in str(codigo):
+                            st.error(codigo)
+                        elif str(codigo).isdigit():
+                            st.balloons()
+                            st.success("✅ ¡Código extraído con éxito!")
+                            st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px;'><h1 style='color: #E50914; margin:0;'>{codigo}</h1></div>", unsafe_allow_html=True)
+                        else:
+                            st.warning(f"Respuesta del sistema: {codigo}")
+        else:
+            st.error("Usuario o clave incorrectos.")
         conn.close()
