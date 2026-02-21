@@ -29,7 +29,6 @@ def inicializar_db():
                  filtro_login INTEGER DEFAULT 1, filtro_temporal INTEGER DEFAULT 1,
                  FOREIGN KEY (vendedor_id) REFERENCES vendedores(id))''')
 
-    # CORRECCIÓN: Se agregó la columna 'plataforma' al bot
     c.execute('''CREATE TABLE IF NOT EXISTS bots_telegram (
                  id INTEGER PRIMARY KEY AUTOINCREMENT, vendedor_id INTEGER,
                  bot_username TEXT, plataforma TEXT, string_session TEXT, recipe_steps TEXT,
@@ -131,11 +130,21 @@ if opcion == "Administrador":
             conn = sqlite3.connect('gestion_netflix_v6.db')
             vendedores = conn.execute("SELECT * FROM vendedores").fetchall()
             for v in vendedores:
-                c1, c2, c3 = st.columns([2, 2, 1])
+                c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1])
                 c1.write(f"**{v[1]}** (Pass: `{v[2]}`)")
                 c2.write("🟢 Activo" if v[3] else "🔴 Inactivo")
-                if c3.button("Estado", key=f"v_{v[0]}"):
+                if c3.button("Estado", key=f"v_stat_{v[0]}"):
                     conn.execute("UPDATE vendedores SET estado=? WHERE id=?", (0 if v[3] else 1, v[0]))
+                    conn.commit()
+                    st.rerun()
+                # NUEVO: Botón de Eliminar Vendedor (Borrado en cascada)
+                if c4.button("🗑️", key=f"v_del_{v[0]}"):
+                    # Borrar datos asociados primero
+                    conn.execute("DELETE FROM correos_madre WHERE vendedor_id=?", (v[0],))
+                    conn.execute("DELETE FROM bots_telegram WHERE vendedor_id=?", (v[0],))
+                    conn.execute("DELETE FROM cuentas WHERE vendedor_id=?", (v[0],))
+                    # Borrar vendedor
+                    conn.execute("DELETE FROM vendedores WHERE id=?", (v[0],))
                     conn.commit()
                     st.rerun()
             conn.close()
@@ -182,12 +191,17 @@ elif opcion == "Panel Vendedor":
                         st.success("Correo añadido.")
                         st.rerun()
                 
-                # Mostrar correos registrados
+                # Mostrar correos registrados con botón de eliminar
                 correos_guardados = c.execute("SELECT id, correo_imap, servidor_imap FROM correos_madre WHERE vendedor_id=?", (v_id,)).fetchall()
                 if correos_guardados:
                     st.write("**Tus correos activos:**")
                     for cg in correos_guardados:
-                        st.caption(f"✅ {cg[1]} ({cg[2]})")
+                        cc1, cc2 = st.columns([5, 1])
+                        cc1.caption(f"✅ {cg[1]} ({cg[2]})")
+                        if cc2.button("🗑️", key=f"del_cm_{cg[0]}"):
+                            c.execute("DELETE FROM correos_madre WHERE id=?", (cg[0],))
+                            conn.commit()
+                            st.rerun()
 
                 st.markdown("---")
                 
@@ -195,7 +209,6 @@ elif opcion == "Panel Vendedor":
                 st.subheader("🤖 Mis Bots de Telegram")
                 with st.form("f_bot"):
                     b_user = st.text_input("Username del Bot (@ejemplo_bot)")
-                    # CORRECCIÓN: Selector de plataforma para el bot
                     plat_bot = st.selectbox("¿Para qué plataforma es este bot?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
                     s_sess = st.text_area("String Session (Llave)")
                     r_steps = st.text_area("Receta de Pasos (Opcional)")
@@ -206,12 +219,17 @@ elif opcion == "Panel Vendedor":
                         st.success("Bot añadido.")
                         st.rerun()
                 
-                # Mostrar bots registrados (ahora muestra la plataforma)
+                # Mostrar bots registrados con botón de eliminar
                 bots_guardados = c.execute("SELECT id, bot_username, plataforma FROM bots_telegram WHERE vendedor_id=?", (v_id,)).fetchall()
                 if bots_guardados:
                     st.write("**Tus bots activos:**")
                     for bg in bots_guardados:
-                        st.caption(f"✅ {bg[1]} ({bg[2]})")
+                        bc1, bc2 = st.columns([5, 1])
+                        bc1.caption(f"✅ {bg[1]} ({bg[2]})")
+                        if bc2.button("🗑️", key=f"del_bot_{bg[0]}"):
+                            c.execute("DELETE FROM bots_telegram WHERE id=?", (bg[0],))
+                            conn.commit()
+                            st.rerun()
 
             with tab_clientes:
                 st.subheader("➕ Crear Acceso para Cliente")
@@ -230,15 +248,17 @@ elif opcion == "Panel Vendedor":
                 
                 st.markdown("---")
                 st.subheader("📋 Control de Pagos de Clientes")
-                # CORRECCIÓN: Se pide la contraseña (pass_cliente) a la BD
                 clientes = c.execute("SELECT id, usuario_cliente, estado_pago, pass_cliente FROM cuentas WHERE vendedor_id=?", (v_id,)).fetchall()
                 for cli in clientes:
-                    cc1, cc2 = st.columns([3, 1])
-                    # CORRECCIÓN: Se muestra la contraseña junto al usuario
+                    cc1, cc2, cc3 = st.columns([3, 1.5, 0.5])
                     cc1.write(f"👤 **{cli[1]}** | 🔑 Clave: `{cli[3]}`")
                     btn_pago = "🟢 Suscripción Activa" if cli[2] else "🔴 Pago Vencido"
                     if cc2.button(btn_pago, key=f"pago_{cli[0]}"):
                         c.execute("UPDATE cuentas SET estado_pago=? WHERE id=?", (0 if cli[2] else 1, cli[0]))
+                        conn.commit()
+                        st.rerun()
+                    if cc3.button("🗑️", key=f"del_cli_{cli[0]}"):
+                        c.execute("DELETE FROM cuentas WHERE id=?", (cli[0],))
                         conn.commit()
                         st.rerun()
         else:
@@ -291,7 +311,6 @@ elif opcion == "Panel Cliente":
                 conn = sqlite3.connect('gestion_netflix_v6.db')
                 v_id = st.session_state['vendedor_id']
                 correos_vendedor = conn.execute("SELECT correo_imap, password_app, servidor_imap, filtro_login, filtro_temporal FROM correos_madre WHERE vendedor_id=?", (v_id,)).fetchall()
-                # CORRECCIÓN: Se pide la plataforma del bot a la BD
                 bots_vendedor = conn.execute("SELECT bot_username, string_session, recipe_steps, plataforma FROM bots_telegram WHERE vendedor_id=?", (v_id,)).fetchall()
                 conn.close()
 
@@ -310,7 +329,6 @@ elif opcion == "Panel Cliente":
                         for bot in bots_vendedor:
                             if not codigo_encontrado:
                                 bot_plat = bot[3]
-                                # CORRECCIÓN: El bot solo se ejecuta si coincide la plataforma (o si sirve para todas)
                                 if bot_plat == "Todas las plataformas" or bot_plat == plat:
                                     resultado = asyncio.run(ejecutar_receta_bot(bot[1], bot[0], bot[2], correo_buscar))
                                     if "Sin respuesta" not in resultado and "Error" not in resultado:
@@ -331,3 +349,4 @@ elif opcion == "Panel Cliente":
                     st.error("No se encontró ningún código reciente para ese correo. Intenta de nuevo en unos minutos.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
+
