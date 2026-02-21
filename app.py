@@ -416,4 +416,45 @@ elif opcion == "Panel Cliente":
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
 
+# =================================================================
+# NUEVA FUNCIÓN: PREVISUALIZADOR ESTÉTICO DE CORREOS (MODULAR)
+# =================================================================
+from streamlit import components
+
+def renderizar_previsualizacion_correo():
+    st.markdown("---")
+    with st.expander("📧 Herramienta de Previsualización de Correos (Diseño)", expanded=False):
+        st.subheader("Simulador de Contenido")
+        st.info("Copia aquí el contenido HTML o texto del correo para ver cómo lo verá el sistema.")
+        
+        # Entrada de datos
+        col_input, col_view = st.columns([1, 1])
+        
+        with col_input:
+            input_sujeto = st.text_input("Asunto del correo (Simulado)", "Netflix: Código de acceso temporal")
+            input_cuerpo = st.text_area("Cuerpo del correo (HTML o Texto)", 
+                                        height=300, 
+                                        placeholder="Pega aquí el código HTML que recibes de IMAP...")
+
+        with col_view:
+            st.write("**Vista previa funcional:**")
+            if input_cuerpo:
+                # Contenedor estético que simula un cliente de correo
+                estilo_correo = f"""
+                <div style="border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: white; color: #333; font-family: sans-serif; height: 350px; overflow-y: auto;">
+                    <div style="border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 10px;">
+                        <small style="color: #888;">Asunto:</small> <b>{input_sujeto}</b>
+                    </div>
+                    {input_cuerpo}
+                </div>
+                """
+                st.components.v1.html(estilo_correo, height=400, scrolling=True)
+            else:
+                st.warning("Esperando contenido para mostrar...")
+
+# Ejecución de la función al final de la página
+# Esto asegura que aparezca debajo de los paneles actuales sin importar cuál esté abierto.
+renderizar_previsualizacion_correo()
+# =================================================================
+
 
