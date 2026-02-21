@@ -14,9 +14,9 @@ from telethon.sessions import StringSession
 MI_API_ID = 34062718  
 MI_API_HASH = 'ca9d5cbc6ce832c6660f949a5567a159'
 
-# --- 1. CONFIGURACIÓN DE BASE DE DATOS (V5) ---
+# --- 1. CONFIGURACIÓN DE BASE DE DATOS (V6) ---
 def inicializar_db():
-    conn = sqlite3.connect('gestion_netflix_v5.db')
+    conn = sqlite3.connect('gestion_netflix_v6.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS vendedores 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -29,12 +29,13 @@ def inicializar_db():
                  filtro_login INTEGER DEFAULT 1, filtro_temporal INTEGER DEFAULT 1,
                  FOREIGN KEY (vendedor_id) REFERENCES vendedores(id))''')
 
+    # CORRECCIÓN: Se agregó la columna 'plataforma' al bot
     c.execute('''CREATE TABLE IF NOT EXISTS bots_telegram (
                  id INTEGER PRIMARY KEY AUTOINCREMENT, vendedor_id INTEGER,
-                 bot_username TEXT, string_session TEXT, recipe_steps TEXT,
+                 bot_username TEXT, plataforma TEXT, string_session TEXT, recipe_steps TEXT,
                  FOREIGN KEY (vendedor_id) REFERENCES vendedores(id))''')
 
-    # CRM Simplificado: Solo controla el acceso web del cliente
+    # CRM Simplificado: Controla el acceso web del cliente
     c.execute('''CREATE TABLE IF NOT EXISTS cuentas 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_cliente TEXT UNIQUE, 
                   pass_cliente TEXT, vendedor_id INTEGER, estado_pago INTEGER DEFAULT 1,
@@ -67,7 +68,7 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         mail.select("inbox")
         criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
-        if not mensajes[0]: return None # Retorna None si no lo encuentra para seguir buscando
+        if not mensajes[0]: return None 
         
         ultimo_id = mensajes[0].split()[-1]
         res, datos = mail.fetch(ultimo_id, '(RFC822)')
@@ -99,10 +100,10 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             nums = [n for n in re.findall(r'\b\d{4}\b', resp.text) if n not in ["2024", "2025", "2026"]]
             return nums[0] if nums else None
     except Exception as e:
-        return None # Falla silenciosa para que intente con el siguiente correo
+        return None 
 
 # --- INTERFAZ DE USUARIO ---
-st.set_page_config(page_title="Gestión de Cuentas v5.0", layout="centered")
+st.set_page_config(page_title="Gestión de Cuentas v6.0", layout="centered")
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador"]
 opcion = st.sidebar.selectbox("Navegación", menu)
 
@@ -116,7 +117,7 @@ if opcion == "Administrador":
             nv = st.text_input("Usuario")
             cv = st.text_input("Contraseña")
             if st.button("Guardar Vendedor"):
-                conn = sqlite3.connect('gestion_netflix_v5.db')
+                conn = sqlite3.connect('gestion_netflix_v6.db')
                 try:
                     venc = (datetime.now() + timedelta(days=30)).date()
                     conn.execute("INSERT INTO vendedores (usuario, clave, estado, fecha_vencimiento) VALUES (?,?,?,?)", (nv, cv, 1, venc))
@@ -127,7 +128,7 @@ if opcion == "Administrador":
 
         with col_lista:
             st.subheader("👥 Vendedores")
-            conn = sqlite3.connect('gestion_netflix_v5.db')
+            conn = sqlite3.connect('gestion_netflix_v6.db')
             vendedores = conn.execute("SELECT * FROM vendedores").fetchall()
             for v in vendedores:
                 c1, c2, c3 = st.columns([2, 2, 1])
@@ -144,7 +145,7 @@ elif opcion == "Panel Vendedor":
     u_v, p_v = st.text_input("Usuario"), st.text_input("Clave", type="password")
     
     if u_v and p_v:
-        conn = sqlite3.connect('gestion_netflix_v5.db')
+        conn = sqlite3.connect('gestion_netflix_v6.db')
         c = conn.cursor()
         vend = c.execute("SELECT id, estado FROM vendedores WHERE usuario=? AND clave=?", (u_v, p_v)).fetchone()
         
@@ -194,21 +195,23 @@ elif opcion == "Panel Vendedor":
                 st.subheader("🤖 Mis Bots de Telegram")
                 with st.form("f_bot"):
                     b_user = st.text_input("Username del Bot (@ejemplo_bot)")
+                    # CORRECCIÓN: Selector de plataforma para el bot
+                    plat_bot = st.selectbox("¿Para qué plataforma es este bot?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
                     s_sess = st.text_area("String Session (Llave)")
                     r_steps = st.text_area("Receta de Pasos (Opcional)")
                     if st.form_submit_button("Añadir Bot"):
-                        c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, string_session, recipe_steps) VALUES (?,?,?,?)", 
-                                  (v_id, b_user, s_sess, r_steps))
+                        c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, plataforma, string_session, recipe_steps) VALUES (?,?,?,?,?)", 
+                                  (v_id, b_user, plat_bot, s_sess, r_steps))
                         conn.commit()
                         st.success("Bot añadido.")
                         st.rerun()
                 
-                # Mostrar bots registrados
-                bots_guardados = c.execute("SELECT id, bot_username FROM bots_telegram WHERE vendedor_id=?", (v_id,)).fetchall()
+                # Mostrar bots registrados (ahora muestra la plataforma)
+                bots_guardados = c.execute("SELECT id, bot_username, plataforma FROM bots_telegram WHERE vendedor_id=?", (v_id,)).fetchall()
                 if bots_guardados:
                     st.write("**Tus bots activos:**")
                     for bg in bots_guardados:
-                        st.caption(f"✅ {bg[1]}")
+                        st.caption(f"✅ {bg[1]} ({bg[2]})")
 
             with tab_clientes:
                 st.subheader("➕ Crear Acceso para Cliente")
@@ -227,10 +230,12 @@ elif opcion == "Panel Vendedor":
                 
                 st.markdown("---")
                 st.subheader("📋 Control de Pagos de Clientes")
-                clientes = c.execute("SELECT id, usuario_cliente, estado_pago FROM cuentas WHERE vendedor_id=?", (v_id,)).fetchall()
+                # CORRECCIÓN: Se pide la contraseña (pass_cliente) a la BD
+                clientes = c.execute("SELECT id, usuario_cliente, estado_pago, pass_cliente FROM cuentas WHERE vendedor_id=?", (v_id,)).fetchall()
                 for cli in clientes:
                     cc1, cc2 = st.columns([3, 1])
-                    cc1.write(f"👤 **{cli[1]}**")
+                    # CORRECCIÓN: Se muestra la contraseña junto al usuario
+                    cc1.write(f"👤 **{cli[1]}** | 🔑 Clave: `{cli[3]}`")
                     btn_pago = "🟢 Suscripción Activa" if cli[2] else "🔴 Pago Vencido"
                     if cc2.button(btn_pago, key=f"pago_{cli[0]}"):
                         c.execute("UPDATE cuentas SET estado_pago=? WHERE id=?", (0 if cli[2] else 1, cli[0]))
@@ -253,7 +258,7 @@ elif opcion == "Panel Cliente":
         p_l = st.text_input("Mi Clave", type="password")
         
         if st.button("Entrar"):
-            conn = sqlite3.connect('gestion_netflix_v5.db')
+            conn = sqlite3.connect('gestion_netflix_v6.db')
             res = conn.execute("SELECT id, vendedor_id, estado_pago, usuario_cliente FROM cuentas WHERE usuario_cliente=? AND pass_cliente=?", (u_l, p_l)).fetchone()
             conn.close()
             
@@ -283,10 +288,11 @@ elif opcion == "Panel Cliente":
             if correo_buscar:
                 st.info(f"Escaneando servidores en busca de correos para: **{correo_buscar}**")
                 
-                conn = sqlite3.connect('gestion_netflix_v5.db')
+                conn = sqlite3.connect('gestion_netflix_v6.db')
                 v_id = st.session_state['vendedor_id']
                 correos_vendedor = conn.execute("SELECT correo_imap, password_app, servidor_imap, filtro_login, filtro_temporal FROM correos_madre WHERE vendedor_id=?", (v_id,)).fetchall()
-                bots_vendedor = conn.execute("SELECT bot_username, string_session, recipe_steps FROM bots_telegram WHERE vendedor_id=?", (v_id,)).fetchall()
+                # CORRECCIÓN: Se pide la plataforma del bot a la BD
+                bots_vendedor = conn.execute("SELECT bot_username, string_session, recipe_steps, plataforma FROM bots_telegram WHERE vendedor_id=?", (v_id,)).fetchall()
                 conn.close()
 
                 codigo_encontrado = None
@@ -296,16 +302,19 @@ elif opcion == "Panel Cliente":
                     for madre in correos_vendedor:
                         if not codigo_encontrado:
                             resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4])
-                            if resultado: # Si encontró algo (incluso un mensaje de bloqueo)
+                            if resultado:
                                 codigo_encontrado = resultado
                     
                     # 2. Si no lo encontró en los correos, busca en los Bots
                     if not codigo_encontrado:
                         for bot in bots_vendedor:
                             if not codigo_encontrado:
-                                resultado = asyncio.run(ejecutar_receta_bot(bot[1], bot[0], bot[2], correo_buscar))
-                                if "Sin respuesta" not in resultado and "Error" not in resultado:
-                                    codigo_encontrado = resultado
+                                bot_plat = bot[3]
+                                # CORRECCIÓN: El bot solo se ejecuta si coincide la plataforma (o si sirve para todas)
+                                if bot_plat == "Todas las plataformas" or bot_plat == plat:
+                                    resultado = asyncio.run(ejecutar_receta_bot(bot[1], bot[0], bot[2], correo_buscar))
+                                    if "Sin respuesta" not in resultado and "Error" not in resultado:
+                                        codigo_encontrado = resultado
 
                 # Mostrar Resultados
                 if codigo_encontrado:
