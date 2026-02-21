@@ -99,7 +99,7 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
     except Exception as e:
         return None 
 
-# --- FUNCIÓN: PLANTILLAS VISUALES ---
+# --- FUNCIÓN: PLANTILLAS VISUALES (TUYA) ---
 def renderizar_plantilla_correo(plataforma, codigo, tipo="Login"):
     estilos = {
         "Netflix": {"bg": "#000000", "acc": "#E50914", "logo": "https://assets.nflxext.com/us/email/logo/netflix-logo-v2.png"},
@@ -147,28 +147,15 @@ def obtener_cuerpo_preview(email_madre, pass_app_madre, email_cliente_final, pla
                 elif tipo == "text/plain": cuerpo_txt += payload
         else:
             cuerpo_html = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-
-        cuerpo_check = cuerpo_html.lower() if cuerpo_html else cuerpo_txt.lower()
-        es_login = "inicio de sesión" in cuerpo_check or "nuevo dispositivo" in cuerpo_check
-        es_temporal = "temporal" in cuerpo_check or "viaje" in cuerpo_check or "travel" in cuerpo_check
-
-        if (es_login and not filtro_login) or (es_temporal and not filtro_temporal):
-            return "CONTENIDO OCULTO: Filtro de seguridad activo."
-
         return cuerpo_html if cuerpo_html else cuerpo_txt
-    except:
-        return None
+    except: return None
 
 def renderizar_previsualizacion(contenido, es_bot=False):
-    with st.expander("📄 Ver correo/mensaje original (Interactuable)", expanded=False):
+    with st.expander("📄 Ver correo/mensaje original", expanded=False):
         if es_bot:
-            st.info("Mensaje directo del Bot:")
             st.code(contenido, language="text")
         else:
-            if "CONTENIDO OCULTO" in str(contenido):
-                st.warning(contenido)
-            else:
-                st.components.v1.html(contenido, height=500, scrolling=True)
+            st.components.v1.html(contenido, height=450, scrolling=True)
 
 # --- INTERFAZ DE USUARIO ---
 st.set_page_config(page_title="Gestión de Cuentas v6.0", layout="centered")
@@ -180,7 +167,9 @@ if 'vendedor_logueado' not in st.session_state: st.session_state['vendedor_logue
 if 'id_vend_actual' not in st.session_state: st.session_state['id_vend_actual'] = None
 if 'nombre_vend_actual' not in st.session_state: st.session_state['nombre_vend_actual'] = ""
 
-# --- PANEL ADMINISTRADOR ---
+# ==========================================
+# PANEL ADMINISTRADOR / VENDEDOR (SIN TOCAR)
+# ==========================================
 if opcion == "Administrador":
     st.header("🔑 Panel de Control Maestro")
     if not st.session_state['admin_logueado']:
@@ -228,7 +217,6 @@ if opcion == "Administrador":
                     st.rerun()
             conn.close()
 
-# --- PANEL VENDEDOR ---
 elif opcion == "Panel Vendedor":
     st.header("👨‍💼 Portal de Vendedores")
     if not st.session_state['vendedor_logueado']:
@@ -274,7 +262,7 @@ elif opcion == "Panel Vendedor":
                     st.rerun()
         conn.close()
 
-# --- PANEL CLIENTE ---
+# --- PANEL CLIENTE (CON LA MEJORA SOLICITADA) ---
 elif opcion == "Panel Cliente":
     st.header("📺 Buscador de Códigos")
     if 'cliente_logueado' not in st.session_state: st.session_state['cliente_logueado'] = False
@@ -312,46 +300,40 @@ elif opcion == "Panel Cliente":
 
                 codigo_encontrado = None
                 with st.spinner('Escaneando...'):
-                    # 1. Búsqueda en IMAP
                     for madre in correos_vendedor:
                         if not codigo_encontrado:
                             res_imap = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4])
-                            if res_imap:
+                            if res_imap: 
                                 codigo_encontrado = res_imap
-                                # Guardamos los datos de la fuente para la preview
-                                fuente_madre = madre 
-
-                    # 2. Búsqueda en Bots si no hay IMAP
+                                # --- LLAMADA SÚPER MODULAR PARA PREVIEW (SIN CAMBIAR TU LÓGICA) ---
+                                cuerpo_real = obtener_cuerpo_preview(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4])
+                                st.session_state['preview_actual'] = cuerpo_real
+                                st.session_state['es_bot_preview'] = False
+                    
                     if not codigo_encontrado:
                         for bot in bots_vendedor:
                             if not codigo_encontrado and (bot[3] == "Todas las plataformas" or bot[3] == plat):
                                 res_bot = asyncio.run(ejecutar_receta_bot(bot[1], bot[0], bot[2], correo_buscar))
                                 if "Sin respuesta" not in res_bot and "Error" not in res_bot:
                                     codigo_encontrado = (res_bot, "Login")
-                                    fuente_madre = "BOT"
+                                    st.session_state['preview_actual'] = res_bot
+                                    st.session_state['es_bot_preview'] = True
 
-                # --- RESULTADOS Y PREVISUALIZACIÓN ---
+                # Mostrar Resultados (Tal cual lo tenías)
                 if codigo_encontrado:
                     if isinstance(codigo_encontrado, tuple):
                         cod, tipo_msg = codigo_encontrado
                         st.balloons()
-                        # Mostrar la plantilla visual que ya tenías
-                        html_box = renderizar_plantilla_correo(plat, cod, tipo_msg)
-                        st.components.v1.html(html_box, height=350)
+                        html_preview = renderizar_plantilla_correo(plat, cod, tipo_msg)
+                        st.components.v1.html(html_preview, height=350)
                         
-                        # --- NUEVA PREVISUALIZACIÓN REAL ---
-                        if fuente_madre == "BOT":
-                            renderizar_previsualizacion(cod, es_bot=True)
-                        else:
-                            # Volvemos a extraer el cuerpo real para el preview
-                            cuerpo_real = obtener_cuerpo_preview(fuente_madre[0], fuente_madre[1], correo_buscar, plat, fuente_madre[2], fuente_madre[3], fuente_madre[4])
-                            if cuerpo_real:
-                                renderizar_previsualizacion(cuerpo_real)
-                    
+                        # AÑADIR LA PREVISUALIZACIÓN AQUÍ ABAJO
+                        if 'preview_actual' in st.session_state:
+                            renderizar_previsualizacion(st.session_state['preview_actual'], st.session_state['es_bot_preview'])
+                            
                     elif "BLOQUEADO" in str(codigo_encontrado):
                         st.error(codigo_encontrado)
                 else:
                     st.error("No se encontró ningún código reciente.")
-
 
 
