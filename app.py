@@ -235,16 +235,22 @@ elif opcion == "Panel Vendedor":
             
             # --- SECCIÓN: CORREOS ---
             st.subheader("📧 Mis Correos (Gmail / Dominios Privados)")
+            
+            # ¡EL CAMBIO ESTÁ AQUÍ! Sacamos el botón fuera del form
+            tipo_correo = st.radio("Tipo de proveedor:", ["Gmail / Google Workspace", "Webmail (Dominio Privado / cPanel)", "Outlook / Hotmail"])
+            
             with st.form("f_madre"):
-                tipo_correo = st.radio("Tipo de proveedor:", ["Gmail / Google Workspace", "Webmail (Dominio Privado / cPanel)", "Outlook / Hotmail"])
                 me = st.text_input("Correo Electrónico")
                 mp = st.text_input("Contraseña (o Clave de Aplicación)", type="password")
                 
                 servidor_personalizado = "imap.gmail.com"
                 if tipo_correo == "Webmail (Dominio Privado / cPanel)":
-                    servidor_personalizado = st.text_input("Servidor IMAP", value="mail.tudominio.com")
+                    servidor_personalizado = st.text_input("Servidor IMAP (Ej: mail.tudominio.com)", value="mail.tudominio.com")
                 elif tipo_correo == "Outlook / Hotmail":
                     servidor_personalizado = "outlook.office365.com"
+                    st.caption("Servidor configurado automáticamente para Outlook/Hotmail.")
+                else:
+                    st.caption("Servidor configurado automáticamente para Gmail.")
 
                 st.write("**Filtros de Seguridad:**")
                 col_f1, col_f2 = st.columns(2)
@@ -420,6 +426,5 @@ elif opcion == "Panel Cliente":
                     st.error("No se encontró ningún correo reciente. Intenta de nuevo en unos minutos.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
-
 
 
