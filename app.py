@@ -412,8 +412,10 @@ elif opcion == "Panel Cliente":
                         st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px;'><h1 style='color: #E50914; margin:0;'>{codigo_encontrado}</h1></div>", unsafe_allow_html=True)
                     else:
                         st.success("✅ ¡Correo encontrado!")
+                        # Forzamos que cualquier clic al botón se abra en una pestaña nueva
+                        html_modificado = f'<base target="_blank">{codigo_encontrado}'
                         # Muestra el correo original en la página
-                        st.components.v1.html(codigo_encontrado, height=600, scrolling=True)
+                        st.components.v1.html(html_modificado, height=600, scrolling=True)
                 else:
                     st.error("No se encontró ningún correo reciente. Intenta de nuevo en unos minutos.")
             else:
