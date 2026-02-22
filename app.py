@@ -44,18 +44,39 @@ def inicializar_db():
 
 inicializar_db()
 
-# --- LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM ---
+# --- LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM MEJORADA ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente, modo_test=False):
-    logs = []
     session_str = session_str.strip()
     try:
         async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
-            await client.send_message(bot_username, email_cliente) # Enviamos directo el correo a buscar
-            await asyncio.sleep(4) 
             
+            # Si el vendedor dejó la receta vacía, asume que es un bot simple y envía el correo directo
+            if not receta_text or receta_text.strip() == "":
+                await client.send_message(bot_username, email_cliente)
+                await asyncio.sleep(4)
+            
+            # Si hay receta, la ejecuta paso a paso
+            else:
+                pasos = receta_text.strip().split('\n')
+                for paso in pasos:
+                    paso = paso.strip()
+                    if not paso: continue # Salta líneas vacías
+                    
+                    # Si el paso dice [CORREO], manda el email del cliente real
+                    if paso.upper() == "[CORREO]":
+                        await client.send_message(bot_username, email_cliente)
+                    else:
+                        # Si no, manda el comando o texto normal de la receta
+                        await client.send_message(bot_username, paso)
+                    
+                    # Pausa de 3 segundos entre cada paso para dejar que el bot reaccione
+                    await asyncio.sleep(3) 
+            
+            # Una vez terminados todos los pasos, leemos el último mensaje que mandó el bot
             ultimos_msgs = await client.get_messages(bot_username, limit=1)
             respuesta = ultimos_msgs[0].text if ultimos_msgs else "Sin respuesta del bot."
             return respuesta
+            
     except Exception as e:
         return f"Error con Bot: {str(e)}"
 
@@ -123,7 +144,6 @@ if 'nombre_vend_actual' not in st.session_state:
 if opcion == "Administrador":
     st.header("🔑 Panel de Control Maestro")
     
-    # Pantalla de Login (Evita recargas en móvil)
     if not st.session_state['admin_logueado']:
         with st.form("form_login_admin"):
             c_maestra = st.text_input("Clave Maestra", type="password")
@@ -135,8 +155,6 @@ if opcion == "Administrador":
                     st.rerun()
                 else:
                     st.error("Clave incorrecta.")
-    
-    # Panel Interno (Solo se ve si está logueado)
     else:
         if st.button("🚪 Cerrar Sesión Admin"):
             st.session_state['admin_logueado'] = False
@@ -189,7 +207,6 @@ if opcion == "Administrador":
 elif opcion == "Panel Vendedor":
     st.header("👨‍💼 Portal de Vendedores")
     
-    # Pantalla de Login (Evita recargas en móvil)
     if not st.session_state['vendedor_logueado']:
         with st.form("form_login_vendedor"):
             u_v = st.text_input("Usuario")
@@ -214,8 +231,6 @@ elif opcion == "Panel Vendedor":
                         st.error("Credenciales incorrectas.")
                 else:
                     st.warning("Llena los campos.")
-    
-    # Panel Interno (Solo se ve si está logueado)
     else:
         st.success(f"Bienvenido, {st.session_state['nombre_vend_actual']}")
         if st.button("🚪 Cerrar Sesión"):
@@ -236,7 +251,6 @@ elif opcion == "Panel Vendedor":
             # --- SECCIÓN: CORREOS ---
             st.subheader("📧 Mis Correos (Gmail / Dominios Privados)")
             
-            # ¡EL CAMBIO ESTÁ AQUÍ! Sacamos el botón fuera del form
             tipo_correo = st.radio("Tipo de proveedor:", ["Gmail / Google Workspace", "Webmail (Dominio Privado / cPanel)", "Outlook / Hotmail"])
             
             with st.form("f_madre"):
@@ -264,7 +278,6 @@ elif opcion == "Panel Vendedor":
                     st.success("Correo añadido.")
                     st.rerun()
             
-            # Mostrar correos registrados con botón de eliminar
             correos_guardados = c.execute("SELECT id, correo_imap, servidor_imap FROM correos_madre WHERE vendedor_id=?", (v_id,)).fetchall()
             if correos_guardados:
                 st.write("**Tus correos activos:**")
@@ -292,7 +305,6 @@ elif opcion == "Panel Vendedor":
                     st.success("Bot añadido.")
                     st.rerun()
             
-            # Mostrar bots registrados con botón de eliminar
             bots_guardados = c.execute("SELECT id, bot_username, plataforma FROM bots_telegram WHERE vendedor_id=?", (v_id,)).fetchall()
             if bots_guardados:
                 st.write("**Tus bots activos:**")
@@ -347,7 +359,6 @@ elif opcion == "Panel Cliente":
 
     if not st.session_state['cliente_logueado']:
         st.write("Inicia sesión con los datos que te dio tu vendedor:")
-        # Uso de form para el login de cliente
         with st.form("login_cliente"):
             u_l = st.text_input("Mi Usuario")
             p_l = st.text_input("Mi Clave", type="password")
@@ -392,13 +403,15 @@ elif opcion == "Panel Cliente":
 
                 codigo_encontrado = None
                 
-                with st.spinner('Revisando buzones del proveedor...'):
+                with st.spinner('Revisando buzones y preguntando a los bots...'):
+                    # 1. Busca en correos
                     for madre in correos_vendedor:
                         if not codigo_encontrado:
                             resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4])
                             if resultado:
                                 codigo_encontrado = resultado
                     
+                    # 2. Si no hay nada en correos, intenta con los bots
                     if not codigo_encontrado:
                         for bot in bots_vendedor:
                             if not codigo_encontrado:
@@ -412,19 +425,19 @@ elif opcion == "Panel Cliente":
                     st.markdown("---")
                     if "BLOQUEADO" in str(codigo_encontrado):
                         st.error(codigo_encontrado)
-                    elif str(codigo_encontrado).isdigit():
+                    elif str(codigo_encontrado).isdigit() or len(str(codigo_encontrado)) < 20: 
+                        # Si es un número o un texto cortito (como una respuesta de bot)
                         st.balloons()
                         st.success("✅ ¡Código extraído con éxito!")
                         st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px;'><h1 style='color: #E50914; margin:0;'>{codigo_encontrado}</h1></div>", unsafe_allow_html=True)
                     else:
                         st.success("✅ ¡Correo encontrado!")
-                        # Forzamos que cualquier clic al botón se abra en una pestaña nueva
                         html_modificado = f'<base target="_blank">{codigo_encontrado}'
-                        # Muestra el correo original en la página
                         st.components.v1.html(html_modificado, height=600, scrolling=True)
                 else:
                     st.error("No se encontró ningún correo reciente. Intenta de nuevo en unos minutos.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
+
 
 
