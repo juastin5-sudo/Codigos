@@ -20,7 +20,7 @@ def inicializar_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS vendedores 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  usuario TEXT UNIQUE, clave TEXT, estado INTEGER, fecha_vencimiento DATE)''')
+                 usuario TEXT UNIQUE, clave TEXT, estado INTEGER, fecha_vencimiento DATE)''')
     
     # Fuentes de extracción múltiples
     c.execute('''CREATE TABLE IF NOT EXISTS correos_madre (
@@ -37,8 +37,8 @@ def inicializar_db():
     # CRM Simplificado: Controla el acceso web del cliente
     c.execute('''CREATE TABLE IF NOT EXISTS cuentas 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_cliente TEXT UNIQUE, 
-                  pass_cliente TEXT, vendedor_id INTEGER, estado_pago INTEGER DEFAULT 1,
-                  FOREIGN KEY(vendedor_id) REFERENCES vendedores(id))''')
+                 pass_cliente TEXT, vendedor_id INTEGER, estado_pago INTEGER DEFAULT 1,
+                 FOREIGN KEY(vendedor_id) REFERENCES vendedores(id))''')
     conn.commit()
     conn.close()
 
@@ -59,7 +59,7 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
     except Exception as e:
         return f"Error con Bot: {str(e)}"
 
-# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTROS ---
+# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTROS MEJORADO (HTML) ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
@@ -72,11 +72,16 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         ultimo_id = mensajes[0].split()[-1]
         res, datos = mail.fetch(ultimo_id, '(RFC822)')
         msg = email.message_from_bytes(datos[0][1])
-        cuerpo = ""
+        
+        cuerpo_html = ""
+        cuerpo_texto = ""
         if msg.is_multipart():
             for part in msg.walk():
-                if part.get_content_type() in ["text/plain", "text/html"]:
-                    cuerpo += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                if part.get_content_type() == "text/html":
+                    cuerpo_html = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                elif part.get_content_type() == "text/plain":
+                    cuerpo_texto = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+            cuerpo = cuerpo_html if cuerpo_html else cuerpo_texto
         else:
             cuerpo = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
@@ -92,12 +97,8 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             match = re.search(r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})', cuerpo, re.IGNORECASE)
             return match.group(1) if match else None
         else:
-            links = re.findall(r'href=[\'"]?([^\'" >]+)', cuerpo)
-            link_n = [l for l in links if "update-primary-location" in l or "nm-c.netflix.com" in l]
-            if not link_n: return None
-            resp = requests.get(link_n[0])
-            nums = [n for n in re.findall(r'\b\d{4}\b', resp.text) if n not in ["2024", "2025", "2026"]]
-            return nums[0] if nums else None
+            # Netflix y otros: Entregamos el correo completo tal cual llega, priorizando HTML
+            return cuerpo
     except Exception as e:
         return None 
 
@@ -410,10 +411,13 @@ elif opcion == "Panel Cliente":
                         st.success("✅ ¡Código extraído con éxito!")
                         st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px;'><h1 style='color: #E50914; margin:0;'>{codigo_encontrado}</h1></div>", unsafe_allow_html=True)
                     else:
-                        st.warning(f"Respuesta del sistema: {codigo_encontrado}")
+                        st.success("✅ ¡Correo encontrado!")
+                        # Muestra el correo original en la página
+                        st.components.v1.html(codigo_encontrado, height=600, scrolling=True)
                 else:
-                    st.error("No se encontró ningún código reciente para ese correo. Intenta de nuevo en unos minutos.")
+                    st.error("No se encontró ningún correo reciente. Intenta de nuevo en unos minutos.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
+
 
 
