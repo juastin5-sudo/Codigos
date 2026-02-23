@@ -13,7 +13,7 @@ from telethon.sessions import StringSession
 # --- CONSTANTES ---
 MI_API_ID = 34062718  
 MI_API_HASH = 'ca9d5cbc6ce832c6660f949a5567a159'
-DB_URL = "postgresql://neondb_owner:npg_HtF1S5TOhcpd@ep-square-truth-aiq0354u-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require" # <-- PEGA AQUÍ TU ENLACE DE NEON.TECH
+DB_URL = "postgresql://neondb_owner:npg_HtF1S5TOhcpd@ep-square-truth-aiq0354u-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require" # <-- ENLACE DE NEON.TECH
 
 # --- 1. CONFIGURACIÓN DE BASE DE DATOS EN LA NUBE ---
 def inicializar_db():
@@ -71,7 +71,7 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
     except Exception as e:
         return f"Error con Bot: {str(e)}"
 
-# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTROS MEJORADO (HTML) ---
+# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTROS ESTRICTOS (HTML) ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
@@ -79,37 +79,56 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         mail.select("inbox")
         criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
+        
         if not mensajes[0]: return None 
         
-        ultimo_id = mensajes[0].split()[-1]
-        res, datos = mail.fetch(ultimo_id, '(RFC822)')
-        msg = email.message_from_bytes(datos[0][1])
+        ids_mensajes = mensajes[0].split()
         
-        cuerpo_html = ""
-        cuerpo_texto = ""
-        if msg.is_multipart():
-            for part in msg.walk():
-                if part.get_content_type() == "text/html":
-                    cuerpo_html = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                elif part.get_content_type() == "text/plain":
-                    cuerpo_texto = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-            cuerpo = cuerpo_html if cuerpo_html else cuerpo_texto
-        else:
-            cuerpo = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+        # Revisar los últimos 3 mensajes hacia atrás para saltar correos peligrosos y buscar el código real
+        for idx in reversed(ids_mensajes[-3:]):
+            res, datos = mail.fetch(idx, '(RFC822)')
+            msg = email.message_from_bytes(datos[0][1])
+            
+            cuerpo_html = ""
+            cuerpo_texto = ""
+            if msg.is_multipart():
+                for part in msg.walk():
+                    if part.get_content_type() == "text/html":
+                        cuerpo_html = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    elif part.get_content_type() == "text/plain":
+                        cuerpo_texto = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                cuerpo = cuerpo_html if cuerpo_html else cuerpo_texto
+            else:
+                cuerpo = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
-        es_login = "inicio de sesión" in cuerpo.lower() or "nuevo dispositivo" in cuerpo.lower()
-        es_temporal = "temporal" in cuerpo.lower() or "viaje" in cuerpo.lower() or "travel" in cuerpo.lower()
+            cuerpo_lower = cuerpo.lower()
+            es_login = "inicio de sesión" in cuerpo_lower or "nuevo dispositivo" in cuerpo_lower
+            es_temporal = "temporal" in cuerpo_lower or "viaje" in cuerpo_lower or "travel" in cuerpo_lower
 
-        if es_login and not filtro_login:
-            return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
-        if es_temporal and not filtro_temporal:
-            return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
+            if plataforma == "Prime Video":
+                match = re.search(r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})', cuerpo, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+                continue # Si no tiene código, revisa el correo anterior
 
-        if plataforma == "Prime Video":
-            match = re.search(r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})', cuerpo, re.IGNORECASE)
-            return match.group(1) if match else None
-        else:
-            return cuerpo
+            elif plataforma == "Netflix":
+                # REGLA ESTRICTA: Si NO es inicio de sesión ni temporal (ej. cambio de clave), lo ignoramos
+                if not es_login and not es_temporal:
+                    continue 
+                
+                # Si ES un correo válido, revisamos las casillas que marcó el vendedor
+                if es_login and not filtro_login:
+                    return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
+                if es_temporal and not filtro_temporal:
+                    return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
+                
+                return cuerpo # Pasa todas las pruebas de seguridad, se lo entregamos al cliente
+            
+            else:
+                # Para otras plataformas, entregamos el primero que encuentre
+                return cuerpo
+
+        return None # Si revisó los últimos 3 y ninguno era un código válido
     except Exception as e:
         return None 
 
@@ -427,4 +446,3 @@ elif opcion == "Panel Cliente":
                     st.error("No se encontró ningún correo reciente. Intenta de nuevo en unos minutos.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
-
