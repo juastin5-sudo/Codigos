@@ -73,25 +73,26 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
     except Exception as e:
         return f"Error con Bot: {str(e)}"
 
-# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTROS ESTRICTOS Y DE SOLICITUD ---
+# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON DICCIONARIO AMPLIADO ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal, tipo_solicitud=None):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
-        criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TO "{email_cliente_final}")'
+        
+        # MEJORA: Buscar el correo del cliente en cualquier parte del texto (ideal para reenvíos)
+        criterio = f'(FROM "amazon.com" TEXT "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TEXT "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
         
         if not mensajes[0]: return None 
         
         ids_mensajes = mensajes[0].split()
         
-        # Revisar los últimos 10 mensajes hacia atrás para buscar correos más viejos y saltar los peligrosos
-        for idx in reversed(ids_mensajes[-10:]):
+        # Revisamos los últimos 20 correos para ir bien atrás en el tiempo
+        for idx in reversed(ids_mensajes[-20:]):
             res, datos = mail.fetch(idx, '(RFC822)')
             msg = email.message_from_bytes(datos[0][1])
             
-            # 1. Leer el Asunto de forma limpia
             asunto_decodificado = ""
             if msg.get("Subject"):
                 subj_bytes, encoding = decode_header(msg.get("Subject"))[0]
@@ -101,7 +102,6 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
                     asunto_decodificado = str(subj_bytes)
             asunto_lower = asunto_decodificado.lower()
 
-            # 2. Leer el Cuerpo
             cuerpo_html = ""
             cuerpo_texto = ""
             if msg.is_multipart():
@@ -122,27 +122,26 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             elif plataforma == "Netflix":
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # REGLA DE SEGURIDAD
-                es_peligroso = ("cambio" in asunto_lower or "cambiar" in cuerpo_limpio or "restablecer" in asunto_lower) and ("cuenta" in asunto_lower or "contraseña" in cuerpo_limpio or "correo" in cuerpo_limpio)
+                # ESCUDO: Solo bloqueamos si es explícitamente un cambio o reseteo
+                es_peligroso = "cambio" in asunto_lower or "restablecer" in asunto_lower or "recuperar" in asunto_lower
                 if es_peligroso:
                     continue 
                     
-                es_login = "inicio" in asunto_lower or "dispositivo" in asunto_lower or "inicio de sesión" in cuerpo_limpio
-                es_temporal = "temporal" in asunto_lower or "viaje" in asunto_lower or "temporal" in cuerpo_limpio
+                # DICCIONARIO AMPLIADO: Cubrimos todas las formas en las que Netflix llama a las cosas
+                es_login = "inicio" in asunto_lower or "dispositivo" in asunto_lower or "sesión" in cuerpo_limpio or "sesion" in cuerpo_limpio
+                es_temporal = "temporal" in asunto_lower or "viaje" in asunto_lower or "hogar" in asunto_lower or "tv" in asunto_lower or "televisor" in asunto_lower or "temporal" in cuerpo_limpio or "viaje" in cuerpo_limpio or "hogar" in cuerpo_limpio or "tv" in cuerpo_limpio
                 
-                # FILTRO DEL CLIENTE: Solo devolvemos lo que el cliente pidió específicamente
                 if tipo_solicitud == "Inicio de Sesión (Nuevo dispositivo)":
-                    if not es_login: continue # Si el correo no es de inicio de sesión, lo ignora y busca el anterior
+                    if not es_login: continue 
                     if not filtro_login: return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
                     return cuerpo
 
                 elif tipo_solicitud == "Acceso Temporal (Viaje / Hogar)":
-                    if not es_temporal: continue # Si el correo no es temporal, lo ignora y busca el anterior
+                    if not es_temporal: continue 
                     if not filtro_temporal: return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
                     return cuerpo
                 
                 else:
-                    # Por si acaso no hay filtro, aplica las reglas generales
                     if es_login and not filtro_login: return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
                     if es_temporal and not filtro_temporal: return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
                     return cuerpo
@@ -421,7 +420,6 @@ elif opcion == "Panel Cliente":
         plat = st.selectbox("Plataforma", ["Netflix", "Prime Video", "Disney+", "Otros"])
         correo_buscar = st.text_input("Ingresa el correo de tu cuenta de streaming:")
         
-        # NUEVO: Si seleccionó Netflix, le preguntamos qué tipo de código quiere
         tipo_solicitud_cliente = None
         if plat == "Netflix":
             tipo_solicitud_cliente = st.radio("¿Qué tipo de código estás solicitando?", ["Inicio de Sesión (Nuevo dispositivo)", "Acceso Temporal (Viaje / Hogar)"])
@@ -444,7 +442,6 @@ elif opcion == "Panel Cliente":
                 with st.spinner('Revisando buzones y preguntando a los bots...'):
                     for madre in correos_vendedor:
                         if not codigo_encontrado:
-                            # Aquí le pasamos al buscador exactamente lo que el cliente pidió
                             resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4], tipo_solicitud_cliente)
                             if resultado:
                                 codigo_encontrado = resultado
