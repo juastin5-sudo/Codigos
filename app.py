@@ -73,8 +73,8 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
     except Exception as e:
         return f"Error con Bot: {str(e)}"
 
-# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTROS ESTRICTOS (HTML) ---
-def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal):
+# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTROS ESTRICTOS Y DE SOLICITUD ---
+def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal, tipo_solicitud=None):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
         mail.login(email_madre, pass_app_madre)
@@ -120,26 +120,32 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
                 continue
 
             elif plataforma == "Netflix":
-                # Limpiamos etiquetas HTML ocultas y convertimos símbolos para que la búsqueda no falle
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # REGLA DE SEGURIDAD (Escudo): Detectar y destruir correos peligrosos
+                # REGLA DE SEGURIDAD
                 es_peligroso = ("cambio" in asunto_lower or "cambiar" in cuerpo_limpio or "restablecer" in asunto_lower) and ("cuenta" in asunto_lower or "contraseña" in cuerpo_limpio or "correo" in cuerpo_limpio)
-                
                 if es_peligroso:
-                    continue # Es un correo de robo/cambio, lo bloqueamos y pasamos al correo anterior
+                    continue 
                     
-                # Verificar opciones del vendedor
                 es_login = "inicio" in asunto_lower or "dispositivo" in asunto_lower or "inicio de sesión" in cuerpo_limpio
                 es_temporal = "temporal" in asunto_lower or "viaje" in asunto_lower or "temporal" in cuerpo_limpio
                 
-                if es_login and not filtro_login:
-                    return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
-                if es_temporal and not filtro_temporal:
-                    return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
+                # FILTRO DEL CLIENTE: Solo devolvemos lo que el cliente pidió específicamente
+                if tipo_solicitud == "Inicio de Sesión (Nuevo dispositivo)":
+                    if not es_login: continue # Si el correo no es de inicio de sesión, lo ignora y busca el anterior
+                    if not filtro_login: return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
+                    return cuerpo
+
+                elif tipo_solicitud == "Acceso Temporal (Viaje / Hogar)":
+                    if not es_temporal: continue # Si el correo no es temporal, lo ignora y busca el anterior
+                    if not filtro_temporal: return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
+                    return cuerpo
                 
-                # Si es un correo válido y seguro, se lo entregamos al cliente
-                return cuerpo
+                else:
+                    # Por si acaso no hay filtro, aplica las reglas generales
+                    if es_login and not filtro_login: return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
+                    if es_temporal and not filtro_temporal: return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
+                    return cuerpo
 
             else:
                 return cuerpo
@@ -415,6 +421,11 @@ elif opcion == "Panel Cliente":
         plat = st.selectbox("Plataforma", ["Netflix", "Prime Video", "Disney+", "Otros"])
         correo_buscar = st.text_input("Ingresa el correo de tu cuenta de streaming:")
         
+        # NUEVO: Si seleccionó Netflix, le preguntamos qué tipo de código quiere
+        tipo_solicitud_cliente = None
+        if plat == "Netflix":
+            tipo_solicitud_cliente = st.radio("¿Qué tipo de código estás solicitando?", ["Inicio de Sesión (Nuevo dispositivo)", "Acceso Temporal (Viaje / Hogar)"])
+        
         if st.button("Extraer Código"):
             if correo_buscar:
                 st.info(f"Escaneando servidores en busca de correos para: **{correo_buscar}**")
@@ -433,7 +444,8 @@ elif opcion == "Panel Cliente":
                 with st.spinner('Revisando buzones y preguntando a los bots...'):
                     for madre in correos_vendedor:
                         if not codigo_encontrado:
-                            resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4])
+                            # Aquí le pasamos al buscador exactamente lo que el cliente pidió
+                            resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4], tipo_solicitud_cliente)
                             if resultado:
                                 codigo_encontrado = resultado
                     
@@ -459,6 +471,6 @@ elif opcion == "Panel Cliente":
                         html_modificado = f'<base target="_blank">{codigo_encontrado}'
                         st.components.v1.html(html_modificado, height=600, scrolling=True)
                 else:
-                    st.error("No se encontró ningún correo reciente. Intenta de nuevo en unos minutos.")
+                    st.error("No se encontró ningún código de ese tipo. Verifica que Netflix ya lo haya enviado al correo e intenta de nuevo.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
