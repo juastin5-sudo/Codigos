@@ -48,7 +48,7 @@ try:
 except Exception as e:
     st.error(f"Error conectando a la base de datos: {e}")
 
-# --- LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM MEJORADA ---
+# --- LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM ---
 async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente, modo_test=False):
     session_str = session_str.strip()
     try:
@@ -73,14 +73,14 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
     except Exception as e:
         return f"Error con Bot: {str(e)}"
 
-# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) BLINDADA ---
+# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTRO DE EXCLUSIÓN ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal, tipo_solicitud=None):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
         
-        # VOLVEMOS AL MÉTODO SEGURO: Buscar por el destinatario original (TO) que nunca falla con los reenvíos
+        # Búsqueda por destinatario original
         criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
         
@@ -88,7 +88,7 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         
         ids_mensajes = mensajes[0].split()
         
-        # Le subimos la memoria a 30 correos para ir bien atrás en el tiempo
+        # Revisamos los últimos 30 correos
         for idx in reversed(ids_mensajes[-30:]):
             res, datos = mail.fetch(idx, '(RFC822)')
             msg = email.message_from_bytes(datos[0][1])
@@ -122,29 +122,31 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             elif plataforma == "Netflix":
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # ESCUDO
-                es_peligroso = "cambio" in asunto_lower or "restablecer" in asunto_lower or "recuperar" in asunto_lower
-                if es_peligroso:
-                    continue 
-                    
-                # DICCIONARIO PERFECTO
-                es_login = "inicio" in asunto_lower or "dispositivo" in asunto_lower or "sesión" in cuerpo_limpio or "sesion" in cuerpo_limpio
-                es_temporal = "temporal" in asunto_lower or "viaje" in asunto_lower or "hogar" in asunto_lower or "televisor" in asunto_lower or "temporal" in cuerpo_limpio or "viaje" in cuerpo_limpio or "hogar" in cuerpo_limpio or "televisor" in cuerpo_limpio
-                
+                # REGLA DE ORO: Solo permitimos correos que sean de ACCESO o INICIO REAL
+                # Si el asunto dice "Un nuevo dispositivo está usando tu cuenta", lo IGNORAMOS porque no tiene botón de acceso
+                es_aviso_basura = "un nuevo dispositivo" in asunto_lower or "se inició sesión" in asunto_lower
+                if es_aviso_basura:
+                    continue
+
+                # Identificar Inicios de Sesión Reales (los que tienen el botón/enlace de acceso)
+                es_login_real = "completa tu solicitud" in cuerpo_limpio or "iniciar sesión" in cuerpo_limpio or "entrar" in cuerpo_limpio
+                # Identificar Códigos Temporales
+                es_temporal_real = "acceso temporal" in asunto_lower or "código" in asunto_lower or "hogar" in cuerpo_limpio
+
                 if tipo_solicitud == "Inicio de Sesión (Nuevo dispositivo)":
-                    if not es_login: continue 
+                    if not es_login_real: continue 
                     if not filtro_login: return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
                     return cuerpo
 
                 elif tipo_solicitud == "Acceso Temporal (Viaje / Hogar)":
-                    if not es_temporal: continue 
+                    if not es_temporal_real: continue 
                     if not filtro_temporal: return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
                     return cuerpo
                 
                 else:
-                    if es_login and not filtro_login: return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
-                    if es_temporal and not filtro_temporal: return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
-                    return cuerpo
+                    if (es_login_real and filtro_login) or (es_temporal_real and filtro_temporal):
+                        return cuerpo
+                    continue
 
             else:
                 return cuerpo
@@ -276,8 +278,8 @@ elif opcion == "Panel Vendedor":
         tab_fuentes, tab_clientes = st.tabs(["⚙️ Fuentes de Extracción", "👥 Gestión de Clientes"])
         
         with tab_fuentes:
-            st.info("Puedes registrar todos los correos y bots que necesites. El sistema buscará en todos ellos automáticamente.")
-            st.subheader("📧 Mis Correos (Gmail / Dominios Privados)")
+            st.info("Registra tus correos madre aquí.")
+            st.subheader("📧 Mis Correos")
             tipo_correo = st.radio("Tipo de proveedor:", ["Gmail / Google Workspace", "Webmail (Dominio Privado / cPanel)", "Outlook / Hotmail"])
             
             with st.form("f_madre"):
@@ -289,10 +291,7 @@ elif opcion == "Panel Vendedor":
                     servidor_personalizado = st.text_input("Servidor IMAP (Ej: mail.tudominio.com)", value="mail.tudominio.com")
                 elif tipo_correo == "Outlook / Hotmail":
                     servidor_personalizado = "outlook.office365.com"
-                    st.caption("Servidor configurado automáticamente para Outlook/Hotmail.")
-                else:
-                    st.caption("Servidor configurado automáticamente para Gmail.")
-
+                
                 st.write("**Filtros de Seguridad:**")
                 col_f1, col_f2 = st.columns(2)
                 f_log = col_f1.checkbox("Permitir Nuevo Inicio de Sesión", value=True)
@@ -307,70 +306,51 @@ elif opcion == "Panel Vendedor":
             
             c.execute("SELECT id, correo_imap, servidor_imap FROM correos_madre WHERE vendedor_id=%s", (v_id,))
             correos_guardados = c.fetchall()
-            if correos_guardados:
-                st.write("**Tus correos activos:**")
-                for cg in correos_guardados:
-                    cc1, cc2 = st.columns([5, 1])
-                    cc1.caption(f"✅ {cg[1]} ({cg[2]})")
-                    if cc2.button("🗑️", key=f"del_cm_{cg[0]}"):
-                        c.execute("DELETE FROM correos_madre WHERE id=%s", (cg[0],))
-                        conn.commit()
-                        st.rerun()
+            for cg in correos_guardados:
+                cc1, cc2 = st.columns([5, 1])
+                cc1.caption(f"✅ {cg[1]} ({cg[2]})")
+                if cc2.button("🗑️", key=f"del_cm_{cg[0]}"):
+                    c.execute("DELETE FROM correos_madre WHERE id=%s", (cg[0],))
+                    conn.commit()
+                    st.rerun()
 
             st.markdown("---")
             st.subheader("🤖 Mis Bots de Telegram")
             with st.form("f_bot"):
                 b_user = st.text_input("Username del Bot (@ejemplo_bot)")
-                plat_bot = st.selectbox("¿Para qué plataforma es este bot?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
-                s_sess = st.text_area("String Session (Llave)")
-                r_steps = st.text_area("Receta de Pasos (Opcional)")
+                plat_bot = st.selectbox("¿Para qué plataforma?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
+                s_sess = st.text_area("String Session")
+                r_steps = st.text_area("Pasos")
                 if st.form_submit_button("Añadir Bot"):
                     c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, plataforma, string_session, recipe_steps) VALUES (%s,%s,%s,%s,%s)", 
                               (v_id, b_user, plat_bot, s_sess, r_steps))
                     conn.commit()
                     st.success("Bot añadido.")
                     st.rerun()
-            
-            c.execute("SELECT id, bot_username, plataforma FROM bots_telegram WHERE vendedor_id=%s", (v_id,))
-            bots_guardados = c.fetchall()
-            if bots_guardados:
-                st.write("**Tus bots activos:**")
-                for bg in bots_guardados:
-                    bc1, bc2 = st.columns([5, 1])
-                    bc1.caption(f"✅ {bg[1]} ({bg[2]})")
-                    if bc2.button("🗑️", key=f"del_bot_{bg[0]}"):
-                        c.execute("DELETE FROM bots_telegram WHERE id=%s", (bg[0],))
-                        conn.commit()
-                        st.rerun()
 
         with tab_clientes:
-            st.subheader("➕ Crear Acceso para Cliente")
-            st.write("Crea un usuario y clave para que tu cliente pueda entrar a la web a buscar sus códigos.")
+            st.subheader("👥 Gestión de Clientes")
             with st.form("f_cliente_nuevo"):
-                c_user = st.text_input("Usuario web (Ej: carlos_perez)")
+                c_user = st.text_input("Usuario web")
                 c_pass = st.text_input("Clave web")
-                
                 if st.form_submit_button("Registrar Cliente"):
                     try:
                         c.execute("INSERT INTO cuentas (usuario_cliente, pass_cliente, vendedor_id) VALUES (%s,%s,%s)", (c_user, c_pass, v_id))
                         conn.commit()
-                        st.success("Acceso creado. Entrégale estos datos a tu cliente.")
+                        st.success("Cliente registrado.")
                         st.rerun()
-                    except: st.error("Ese usuario web ya existe. Intenta con otro.")
+                    except: st.error("El usuario ya existe.")
             
-            st.markdown("---")
-            st.subheader("📋 Control de Pagos de Clientes")
             c.execute("SELECT id, usuario_cliente, estado_pago, pass_cliente FROM cuentas WHERE vendedor_id=%s", (v_id,))
-            clientes = c.fetchall()
-            for cli in clientes:
+            for cli in c.fetchall():
                 cc1, cc2, cc3 = st.columns([3, 1.5, 0.5])
-                cc1.write(f"👤 **{cli[1]}** | 🔑 Clave: `{cli[3]}`")
-                btn_pago = "🟢 Suscripción Activa" if cli[2] else "🔴 Pago Vencido"
-                if cc2.button(btn_pago, key=f"pago_{cli[0]}"):
+                cc1.write(f"👤 **{cli[1]}** | 🔑 `{cli[3]}`")
+                btn_pago = "🟢 Activo" if cli[2] else "🔴 Vencido"
+                if cc2.button(btn_pago, key=f"p_c_{cli[0]}"):
                     c.execute("UPDATE cuentas SET estado_pago=%s WHERE id=%s", (0 if cli[2] else 1, cli[0]))
                     conn.commit()
                     st.rerun()
-                if cc3.button("🗑️", key=f"del_cli_{cli[0]}"):
+                if cc3.button("🗑️", key=f"d_c_{cli[0]}"):
                     c.execute("DELETE FROM cuentas WHERE id=%s", (cli[0],))
                     conn.commit()
                     st.rerun()
@@ -385,29 +365,23 @@ elif opcion == "Panel Cliente":
     if 'cliente_logueado' not in st.session_state: st.session_state['cliente_logueado'] = False
 
     if not st.session_state['cliente_logueado']:
-        st.write("Inicia sesión con los datos que te dio tu vendedor:")
         with st.form("login_cliente"):
             u_l = st.text_input("Mi Usuario")
             p_l = st.text_input("Mi Clave", type="password")
-            btn_entrar_cli = st.form_submit_button("Entrar")
-            
-            if btn_entrar_cli:
+            if st.form_submit_button("Entrar"):
                 conn = psycopg2.connect(DB_URL)
                 c = conn.cursor()
                 c.execute("SELECT id, vendedor_id, estado_pago, usuario_cliente FROM cuentas WHERE usuario_cliente=%s AND pass_cliente=%s", (u_l, p_l))
                 res = c.fetchone()
                 conn.close()
-                
                 if res:
-                    if res[2] == 0:
-                        st.error("🚫 Tu suscripción está inactiva. Contacta a tu vendedor para renovar.")
+                    if res[2] == 0: st.error("Suscripción inactiva.")
                     else:
                         st.session_state['cliente_logueado'] = True
                         st.session_state['vendedor_id'] = res[1]
                         st.session_state['nombre_cli'] = res[3]
                         st.rerun()
-                else:
-                    st.error("Usuario o clave incorrectos.")
+                else: st.error("Datos incorrectos.")
     
     else:
         st.success(f"Hola, {st.session_state['nombre_cli']}.")
@@ -416,18 +390,15 @@ elif opcion == "Panel Cliente":
             st.rerun()
 
         st.markdown("---")
-        st.subheader("🔍 Buscar mi código")
         plat = st.selectbox("Plataforma", ["Netflix", "Prime Video", "Disney+", "Otros"])
-        correo_buscar = st.text_input("Ingresa el correo de tu cuenta de streaming:")
+        correo_buscar = st.text_input("Correo de streaming:")
         
         tipo_solicitud_cliente = None
         if plat == "Netflix":
-            tipo_solicitud_cliente = st.radio("¿Qué tipo de código estás solicitando?", ["Inicio de Sesión (Nuevo dispositivo)", "Acceso Temporal (Viaje / Hogar)"])
+            tipo_solicitud_cliente = st.radio("¿Qué buscas?", ["Inicio de Sesión (Nuevo dispositivo)", "Acceso Temporal (Viaje / Hogar)"])
         
         if st.button("Extraer Código"):
             if correo_buscar:
-                st.info(f"Escaneando servidores en busca de correos para: **{correo_buscar}**")
-                
                 conn = psycopg2.connect(DB_URL)
                 c = conn.cursor()
                 v_id = st.session_state['vendedor_id']
@@ -438,36 +409,25 @@ elif opcion == "Panel Cliente":
                 conn.close()
 
                 codigo_encontrado = None
-                
-                with st.spinner('Revisando buzones y preguntando a los bots...'):
+                with st.spinner('Buscando...'):
                     for madre in correos_vendedor:
                         if not codigo_encontrado:
                             resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4], tipo_solicitud_cliente)
-                            if resultado:
-                                codigo_encontrado = resultado
+                            if resultado: codigo_encontrado = resultado
                     
                     if not codigo_encontrado:
                         for bot in bots_vendedor:
-                            if not codigo_encontrado:
-                                bot_plat = bot[3]
-                                if bot_plat == "Todas las plataformas" or bot_plat == plat:
-                                    resultado = asyncio.run(ejecutar_receta_bot(bot[1], bot[0], bot[2], correo_buscar))
-                                    if "Sin respuesta" not in resultado and "Error" not in resultado:
-                                        codigo_encontrado = resultado
+                            if not codigo_encontrado and (bot[3] == "Todas las plataformas" or bot[3] == plat):
+                                resultado = asyncio.run(ejecutar_receta_bot(bot[1], bot[0], bot[2], correo_buscar))
+                                if "Sin respuesta" not in resultado and "Error" not in resultado:
+                                    codigo_encontrado = resultado
 
                 if codigo_encontrado:
-                    st.markdown("---")
-                    if "BLOQUEADO" in str(codigo_encontrado):
-                        st.error(codigo_encontrado)
-                    elif str(codigo_encontrado).isdigit() or len(str(codigo_encontrado)) < 20: 
-                        st.balloons()
-                        st.success("✅ ¡Código extraído con éxito!")
-                        st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px;'><h1 style='color: #E50914; margin:0;'>{codigo_encontrado}</h1></div>", unsafe_allow_html=True)
+                    if "BLOQUEADO" in str(codigo_encontrado): st.error(codigo_encontrado)
+                    elif str(codigo_encontrado).isdigit() or len(str(codigo_encontrado)) < 15: 
+                        st.success("✅ ¡Código encontrado!")
+                        st.markdown(f"<h1 style='text-align:center; color:#E50914;'>{codigo_encontrado}</h1>", unsafe_allow_html=True)
                     else:
-                        st.success("✅ ¡Correo encontrado!")
-                        html_modificado = f'<base target="_blank">{codigo_encontrado}'
-                        st.components.v1.html(html_modificado, height=600, scrolling=True)
-                else:
-                    st.error("No se encontró ningún código de ese tipo. Verifica que Netflix ya lo haya enviado al correo e intenta de nuevo.")
-            else:
-                st.warning("Por favor, ingresa el correo de streaming.")
+                        st.success("✅ ¡Acceso encontrado!")
+                        st.components.v1.html(f'<base target="_blank">{codigo_encontrado}', height=600, scrolling=True)
+                else: st.error("No se encontró el código solicitado. Revisa el correo original.")
