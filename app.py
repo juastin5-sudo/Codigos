@@ -1,4 +1,4 @@
-import streamlit as st
+iimport streamlit as st
 import psycopg2
 import pandas as pd
 import imaplib
@@ -73,23 +73,23 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
     except Exception as e:
         return f"Error con Bot: {str(e)}"
 
-# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON DICCIONARIO AMPLIADO ---
+# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) BLINDADA ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal, tipo_solicitud=None):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
         
-        # MEJORA: Buscar el correo del cliente en cualquier parte del texto (ideal para reenvíos)
-        criterio = f'(FROM "amazon.com" TEXT "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TEXT "{email_cliente_final}")'
+        # VOLVEMOS AL MÉTODO SEGURO: Buscar por el destinatario original (TO) que nunca falla con los reenvíos
+        criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
         
         if not mensajes[0]: return None 
         
         ids_mensajes = mensajes[0].split()
         
-        # Revisamos los últimos 20 correos para ir bien atrás en el tiempo
-        for idx in reversed(ids_mensajes[-20:]):
+        # Le subimos la memoria a 30 correos para ir bien atrás en el tiempo
+        for idx in reversed(ids_mensajes[-30:]):
             res, datos = mail.fetch(idx, '(RFC822)')
             msg = email.message_from_bytes(datos[0][1])
             
@@ -122,14 +122,14 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             elif plataforma == "Netflix":
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # ESCUDO: Solo bloqueamos si es explícitamente un cambio o reseteo
+                # ESCUDO
                 es_peligroso = "cambio" in asunto_lower or "restablecer" in asunto_lower or "recuperar" in asunto_lower
                 if es_peligroso:
                     continue 
                     
-                # DICCIONARIO AMPLIADO: Cubrimos todas las formas en las que Netflix llama a las cosas
+                # DICCIONARIO PERFECTO
                 es_login = "inicio" in asunto_lower or "dispositivo" in asunto_lower or "sesión" in cuerpo_limpio or "sesion" in cuerpo_limpio
-                es_temporal = "temporal" in asunto_lower or "viaje" in asunto_lower or "hogar" in asunto_lower or "tv" in asunto_lower or "televisor" in asunto_lower or "temporal" in cuerpo_limpio or "viaje" in cuerpo_limpio or "hogar" in cuerpo_limpio or "tv" in cuerpo_limpio
+                es_temporal = "temporal" in asunto_lower or "viaje" in asunto_lower or "hogar" in asunto_lower or "televisor" in asunto_lower or "temporal" in cuerpo_limpio or "viaje" in cuerpo_limpio or "hogar" in cuerpo_limpio or "televisor" in cuerpo_limpio
                 
                 if tipo_solicitud == "Inicio de Sesión (Nuevo dispositivo)":
                     if not es_login: continue 
