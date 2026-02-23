@@ -6,6 +6,8 @@ import email
 import re
 import requests
 import asyncio
+import html
+from email.header import decode_header
 from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -13,7 +15,7 @@ from telethon.sessions import StringSession
 # --- CONSTANTES ---
 MI_API_ID = 34062718  
 MI_API_HASH = 'ca9d5cbc6ce832c6660f949a5567a159'
-DB_URL = "postgresql://neondb_owner:npg_HtF1S5TOhcpd@ep-square-truth-aiq0354u-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require" # <-- ENLACE DE NEON.TECH
+DB_URL = "postgresql://neondb_owner:npg_HtF1S5TOhcpd@ep-square-truth-aiq0354u-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 # --- 1. CONFIGURACIÓN DE BASE DE DATOS EN LA NUBE ---
 def inicializar_db():
@@ -89,6 +91,17 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             res, datos = mail.fetch(idx, '(RFC822)')
             msg = email.message_from_bytes(datos[0][1])
             
+            # 1. Leer el Asunto de forma limpia
+            asunto_decodificado = ""
+            if msg.get("Subject"):
+                subj_bytes, encoding = decode_header(msg.get("Subject"))[0]
+                if isinstance(subj_bytes, bytes):
+                    asunto_decodificado = subj_bytes.decode(encoding if encoding else 'utf-8', errors='ignore')
+                else:
+                    asunto_decodificado = str(subj_bytes)
+            asunto_lower = asunto_decodificado.lower()
+
+            # 2. Leer el Cuerpo
             cuerpo_html = ""
             cuerpo_texto = ""
             if msg.is_multipart():
@@ -101,34 +114,37 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             else:
                 cuerpo = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
-            cuerpo_lower = cuerpo.lower()
-            es_login = "inicio de sesión" in cuerpo_lower or "nuevo dispositivo" in cuerpo_lower
-            es_temporal = "temporal" in cuerpo_lower or "viaje" in cuerpo_lower or "travel" in cuerpo_lower
-
             if plataforma == "Prime Video":
                 match = re.search(r'c(?:o|ó)digo de verificaci(?:o|ó)n es:\s*(\d{6})', cuerpo, re.IGNORECASE)
-                if match:
-                    return match.group(1)
-                continue # Si no tiene código, revisa el correo anterior
+                if match: return match.group(1)
+                continue
 
             elif plataforma == "Netflix":
-                # REGLA ESTRICTA: Si NO es inicio de sesión ni temporal (ej. cambio de clave), lo ignoramos
-                if not es_login and not es_temporal:
-                    continue 
+                # Limpiamos etiquetas HTML ocultas y convertimos símbolos para que la búsqueda no falle
+                cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # Si ES un correo válido, revisamos las casillas que marcó el vendedor
+                # REGLA DE SEGURIDAD (Escudo): Detectar y destruir correos peligrosos
+                es_peligroso = ("cambio" in asunto_lower or "cambiar" in cuerpo_limpio or "restablecer" in asunto_lower) and ("cuenta" in asunto_lower or "contraseña" in cuerpo_limpio or "correo" in cuerpo_limpio)
+                
+                if es_peligroso:
+                    continue # Es un correo de robo/cambio, lo bloqueamos y pasamos al correo anterior
+                    
+                # Verificar opciones del vendedor
+                es_login = "inicio" in asunto_lower or "dispositivo" in asunto_lower or "inicio de sesión" in cuerpo_limpio
+                es_temporal = "temporal" in asunto_lower or "viaje" in asunto_lower or "temporal" in cuerpo_limpio
+                
                 if es_login and not filtro_login:
                     return "BLOQUEADO: El vendedor desactivó la entrega automática para Inicios de Sesión."
                 if es_temporal and not filtro_temporal:
                     return "BLOQUEADO: El vendedor desactivó la entrega automática para Accesos Temporales."
                 
-                return cuerpo # Pasa todas las pruebas de seguridad, se lo entregamos al cliente
-            
-            else:
-                # Para otras plataformas, entregamos el primero que encuentre
+                # Si es un correo válido y seguro, se lo entregamos al cliente
                 return cuerpo
 
-        return None # Si revisó los últimos 3 y ninguno era un código válido
+            else:
+                return cuerpo
+
+        return None 
     except Exception as e:
         return None 
 
