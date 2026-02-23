@@ -86,8 +86,8 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         
         ids_mensajes = mensajes[0].split()
         
-        # Revisar los últimos 3 mensajes hacia atrás para saltar correos peligrosos y buscar el código real
-        for idx in reversed(ids_mensajes[-3:]):
+        # Revisar los últimos 10 mensajes hacia atrás para buscar correos más viejos y saltar los peligrosos
+        for idx in reversed(ids_mensajes[-10:]):
             res, datos = mail.fetch(idx, '(RFC822)')
             msg = email.message_from_bytes(datos[0][1])
             
