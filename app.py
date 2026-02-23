@@ -73,14 +73,13 @@ async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_clie
     except Exception as e:
         return f"Error con Bot: {str(e)}"
 
-# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTRO DE EXCLUSIÓN ---
+# --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) CON FILTRO ESTRICTO MUTUAMENTE EXCLUYENTE ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal, tipo_solicitud=None):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
         
-        # Búsqueda por destinatario original
         criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
         
@@ -88,7 +87,6 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         
         ids_mensajes = mensajes[0].split()
         
-        # Revisamos los últimos 30 correos
         for idx in reversed(ids_mensajes[-30:]):
             res, datos = mail.fetch(idx, '(RFC822)')
             msg = email.message_from_bytes(datos[0][1])
@@ -122,16 +120,20 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             elif plataforma == "Netflix":
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # REGLA DE ORO: Solo permitimos correos que sean de ACCESO o INICIO REAL
-                # Si el asunto dice "Un nuevo dispositivo está usando tu cuenta", lo IGNORAMOS porque no tiene botón de acceso
+                # Ignorar basura (Avisos sin código)
                 es_aviso_basura = "un nuevo dispositivo" in asunto_lower or "se inició sesión" in asunto_lower
                 if es_aviso_basura:
                     continue
 
-                # Identificar Inicios de Sesión Reales (los que tienen el botón/enlace de acceso)
-                es_login_real = "completa tu solicitud" in cuerpo_limpio or "iniciar sesión" in cuerpo_limpio or "entrar" in cuerpo_limpio
-                # Identificar Códigos Temporales
-                es_temporal_real = "acceso temporal" in asunto_lower or "código" in asunto_lower or "hogar" in cuerpo_limpio
+                # 1. Identificar Códigos Temporales (Estricto: sin usar la palabra "código")
+                es_temporal_real = "temporal" in asunto_lower or "hogar" in asunto_lower or "viaje" in asunto_lower or "televisor" in asunto_lower or "temporal" in cuerpo_limpio or "hogar" in cuerpo_limpio or "viaje" in cuerpo_limpio
+                
+                # 2. Identificar Inicios de Sesión Reales
+                es_login_real = "iniciar sesión" in asunto_lower or "iniciar sesión" in cuerpo_limpio or "completa tu solicitud" in cuerpo_limpio or "entrar" in cuerpo_limpio
+                
+                # 3. Forzar exclusión mutua: Si es temporal, es imposible que sea inicio de sesión (evita confusiones)
+                if es_temporal_real:
+                    es_login_real = False
 
                 if tipo_solicitud == "Inicio de Sesión (Nuevo dispositivo)":
                     if not es_login_real: continue 
