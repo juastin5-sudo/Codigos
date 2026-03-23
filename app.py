@@ -366,7 +366,6 @@ elif opcion == "Panel Vendedor":
             st.write("**Lista de Clientes y Accesos**")
             c.execute("SELECT id, usuario_cliente, estado_pago, pass_cliente, correos_permitidos FROM cuentas WHERE vendedor_id=%s", (v_id,))
             for cli in c.fetchall():
-                # MENÚ DESPLEGABLE PARA CADA CLIENTE (Para editar fácil)
                 with st.expander(f"👤 {cli[1]} | 🔑 Clave: {cli[3]}"):
                     estado_texto = "🟢 Activo" if cli[2] else "🔴 Vencido"
                     st.write(f"**Estado de suscripción:** {estado_texto}")
@@ -408,7 +407,6 @@ elif opcion == "Panel Cliente":
             if st.form_submit_button("Entrar"):
                 conn = psycopg2.connect(DB_URL)
                 c = conn.cursor()
-                # AHORA EL LOGIN TAMBIÉN EXTRAE LOS CORREOS PERMITIDOS
                 c.execute("SELECT id, vendedor_id, estado_pago, usuario_cliente, correos_permitidos FROM cuentas WHERE usuario_cliente=%s AND pass_cliente=%s", (u_l, p_l))
                 res = c.fetchone()
                 conn.close()
@@ -438,20 +436,16 @@ elif opcion == "Panel Cliente":
         
         if st.button("Extraer Código"):
             if correo_buscar:
-                # LA MAGIA DEL CANDADO INVISIBLE
                 correo_limpio = correo_buscar.strip().lower()
                 correos_autorizados = [e.strip().lower() for e in st.session_state.get('correos_permitidos', '').split(',')]
                 
                 if correo_limpio not in correos_autorizados:
-                    # El cliente intenta buscar un correo que no le pertenece.
-                    # Simulamos que el sistema está trabajando para que no sospeche.
                     st.info(f"Escaneando servidores en busca de correos para: **{correo_buscar}**")
                     with st.spinner('Buscando...'):
-                        time.sleep(2) # Pausa de 2 segundos para dar realismo
+                        time.sleep(2)
                     st.error("No se encontró el código solicitado. Verifica que el correo original esté bien escrito o intenta de nuevo en unos minutos.")
                 
                 else:
-                    # El cliente buscó el correo correcto, procedemos con la búsqueda real
                     conn = psycopg2.connect(DB_URL)
                     c = conn.cursor()
                     v_id = st.session_state['vendedor_id']
@@ -477,13 +471,19 @@ elif opcion == "Panel Cliente":
                                         codigo_encontrado = resultado
 
                     if codigo_encontrado:
-                        if "BLOQUEADO" in str(codigo_encontrado): st.error(codigo_encontrado)
-                        elif str(codigo_encontrado).isdigit() or len(str(codigo_encontrado)) < 15: 
+                        codigo_str = str(codigo_encontrado)
+                        if "BLOQUEADO" in codigo_str: 
+                            st.error(codigo_str)
+                        # MEJORA: Aumentamos el límite a 150 para atrapar mensajes de bots como el de Disney
+                        elif codigo_str.isdigit() or len(codigo_str) < 150: 
                             st.success("✅ ¡Código encontrado!")
-                            st.markdown(f"<h1 style='text-align:center; color:#E50914;'>{codigo_encontrado}</h1>", unsafe_allow_html=True)
+                            # MEJORA VISUAL: Fondo oscuro elegante y texto blanco para que resalte
+                            st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px; background-color: #1E1E1E;'><h2 style='color: #FFFFFF; margin:0;'>{codigo_str}</h2></div>", unsafe_allow_html=True)
                         else:
                             st.success("✅ ¡Acceso encontrado!")
-                            st.components.v1.html(f'<base target="_blank">{codigo_encontrado}', height=600, scrolling=True)
+                            # Forzamos fondo blanco para correos HTML
+                            html_seguro = f'<div style="background-color: #FFFFFF; color: #000000; padding: 10px;">{codigo_str}</div>'
+                            st.components.v1.html(html_seguro, height=600, scrolling=True)
                     else: st.error("No se encontró el código solicitado. Revisa el correo original.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
