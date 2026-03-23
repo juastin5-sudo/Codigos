@@ -324,7 +324,7 @@ elif opcion == "Panel Vendedor":
 
             st.markdown("---")
             st.subheader("🤖 Mis Bots de Telegram")
-            with st.form("f_bot"):
+            with st.form("f_bot", clear_on_submit=True):
                 b_user = st.text_input("Username del Bot (@ejemplo_bot)")
                 plat_bot = st.selectbox("¿Para qué plataforma?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
                 s_sess = st.text_area("String Session")
@@ -335,6 +335,18 @@ elif opcion == "Panel Vendedor":
                     conn.commit()
                     st.success("Bot añadido.")
                     st.rerun()
+
+            c.execute("SELECT id, bot_username, plataforma FROM bots_telegram WHERE vendedor_id=%s", (v_id,))
+            bots_guardados = c.fetchall()
+            if bots_guardados:
+                st.write("**Tus bots activos:**")
+                for bg in bots_guardados:
+                    bc1, bc2 = st.columns([5, 1])
+                    bc1.caption(f"✅ {bg[1]} ({bg[2]})")
+                    if bc2.button("🗑️", key=f"del_bot_{bg[0]}"):
+                        c.execute("DELETE FROM bots_telegram WHERE id=%s", (bg[0],))
+                        conn.commit()
+                        st.rerun()
 
         with tab_clientes:
             st.subheader("👥 Gestión de Clientes")
