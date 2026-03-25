@@ -481,8 +481,8 @@ elif opcion == "Panel Cliente":
                             st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px; background-color: #1E1E1E;'><h2 style='color: #FFFFFF; margin:0;'>{codigo_str}</h2></div>", unsafe_allow_html=True)
                         else:
                             st.success("✅ ¡Acceso encontrado!")
-                            # Forzamos fondo blanco para correos HTML
-                            html_seguro = f'<div style="background-color: #FFFFFF; color: #000000; padding: 10px;">{codigo_str}</div>'
+                            # Agregamos <base target="_blank"> para que abra en nueva pestaña y forzamos fondo blanco
+                            html_seguro = f'<base target="_blank"><div style="background-color: #FFFFFF; color: #000000; padding: 10px;">{codigo_str}</div>'
                             st.components.v1.html(html_seguro, height=600, scrolling=True)
                     else: st.error("No se encontró el código solicitado. Revisa el correo original.")
             else:
