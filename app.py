@@ -59,8 +59,17 @@ try:
 except Exception as e:
     st.error(f"Error conectando a la base de datos: {e}")
 
-# --- NUEVA LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM CON SOPORTE PARA BOTONES ---
-async def enviar_y_recibir_bot(session_str, bot_username, mensaje):
+# --- OBTENER ID DEL ÚLTIMO MENSAJE (CORTINA DE PRIVACIDAD) ---
+async def obtener_ultimo_id(session_str, bot_username):
+    try:
+        async with TelegramClient(StringSession(session_str.strip()), MI_API_ID, MI_API_HASH) as client:
+            last = await client.get_messages(bot_username, limit=1)
+            return last[0].id if last else 0
+    except:
+        return 0
+
+# --- NUEVA LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM CON SOPORTE PARA BOTONES Y PRIVACIDAD ---
+async def enviar_y_recibir_bot(session_str, bot_username, mensaje, min_id=0):
     session_str = session_str.strip()
     try:
         async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
@@ -80,8 +89,8 @@ async def enviar_y_recibir_bot(session_str, bot_username, mensaje):
                     await client.send_message(bot_username, mensaje)
                 await asyncio.sleep(3) # Esperamos 3 segundos para que el bot procese y responda
             
-            # Obtenemos los últimos 6 mensajes
-            mensajes = await client.get_messages(bot_username, limit=6)
+            # Obtenemos los mensajes PERO solo los que sean más nuevos que min_id
+            mensajes = await client.get_messages(bot_username, limit=20, min_id=min_id)
             historial = []
             for m in reversed(mensajes):
                 texto = m.text if m.text else ""
@@ -196,6 +205,7 @@ if 'nombre_vend_actual' not in st.session_state: st.session_state['nombre_vend_a
 if 'modo_chat' not in st.session_state: st.session_state['modo_chat'] = False
 if 'chat_historial' not in st.session_state: st.session_state['chat_historial'] = []
 if 'bot_activo' not in st.session_state: st.session_state['bot_activo'] = None
+if 'bot_min_id' not in st.session_state: st.session_state['bot_min_id'] = 0
 
 # ==========================================
 # PANEL ADMINISTRADOR
@@ -352,7 +362,7 @@ elif opcion == "Panel Vendedor":
                 b_user = st.text_input("Username del Bot (@ejemplo_bot)")
                 plat_bot = st.selectbox("¿Para qué plataforma?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
                 s_sess = st.text_area("String Session")
-                r_steps = st.text_area("Pasos")
+                r_steps = st.text_area("Pasos (Opcional, el bot ahora es interactivo)")
                 if st.form_submit_button("Añadir Bot"):
                     c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, plataforma, string_session, recipe_steps) VALUES (%s,%s,%s,%s,%s)", 
                               (v_id, b_user, plat_bot, s_sess, r_steps))
@@ -501,7 +511,10 @@ elif opcion == "Panel Cliente":
                             if bot_encontrado:
                                 st.session_state['modo_chat'] = True
                                 st.session_state['bot_activo'] = bot_encontrado
-                                st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_encontrado[1], bot_encontrado[0], "/start"))
+                                # CORTINA DE PRIVACIDAD: Capturamos el último ID antes de enviar el /start
+                                st.session_state['bot_min_id'] = asyncio.run(obtener_ultimo_id(bot_encontrado[1], bot_encontrado[0]))
+                                # Mandamos el /start usando ese ID como filtro base
+                                st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_encontrado[1], bot_encontrado[0], "/start", st.session_state['bot_min_id']))
                                 st.rerun()
 
                     if codigo_encontrado:
@@ -520,7 +533,7 @@ elif opcion == "Panel Cliente":
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
 
-        # --- DIBUJAR LA CONSOLA INTERACTIVA (AHORA CON BOTONES) ---
+        # --- DIBUJAR LA CONSOLA INTERACTIVA (AHORA CON BOTONES Y PRIVACIDAD) ---
         if st.session_state.get('modo_chat'):
             st.markdown("---")
             st.subheader("💬 Consola de Conexión en Vivo")
@@ -542,9 +555,10 @@ elif opcion == "Panel Cliente":
                     # Dibujamos un botón nativo de Streamlit que simula al de Telegram
                     if cols[idx % 2].button(btn_text, use_container_width=True, key=f"bot_btn_{idx}"):
                         bot_actual = st.session_state['bot_activo']
+                        min_id_actual = st.session_state['bot_min_id']
                         with st.spinner(f"Seleccionando '{btn_text}'..."):
-                            # El prefijo [BOTON] le indica al código que debe hacer un clic real en Telegram
-                            st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}"))
+                            # Pasamos el min_id para mantener la cortina de privacidad
+                            st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}", min_id_actual))
                         st.rerun()
             
             # Barra normal para que el cliente escriba correos o números
@@ -552,6 +566,8 @@ elif opcion == "Panel Cliente":
             
             if respuesta_cliente:
                 bot_actual = st.session_state['bot_activo']
+                min_id_actual = st.session_state['bot_min_id']
                 with st.spinner("Enviando respuesta..."):
-                    st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], respuesta_cliente))
+                    # Pasamos el min_id para mantener la cortina de privacidad
+                    st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], respuesta_cliente, min_id_actual))
                 st.rerun()
