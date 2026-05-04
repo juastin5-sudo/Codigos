@@ -397,9 +397,19 @@ elif opcion == "Panel Vendedor":
                     except: st.error("El usuario ya existe.")
             
             st.markdown("---")
+            
+            # --- NUEVO: BUSCADOR DE CLIENTES ---
             st.write("**Lista de Clientes y Accesos**")
+            busqueda_cliente = st.text_input("🔍 Buscar cliente por usuario web:", placeholder="Escribe aquí para filtrar...").strip().lower()
+            
             c.execute("SELECT id, usuario_cliente, estado_pago, pass_cliente, correos_permitidos FROM cuentas WHERE vendedor_id=%s", (v_id,))
-            for cli in c.fetchall():
+            todos_los_clientes = c.fetchall()
+            
+            for cli in todos_los_clientes:
+                # Si el buscador tiene texto y el nombre del cliente NO coincide, lo saltamos
+                if busqueda_cliente and busqueda_cliente not in cli[1].lower():
+                    continue
+                
                 with st.expander(f"👤 {cli[1]} | 🔑 Clave: {cli[3]}"):
                     estado_texto = "🟢 Activo" if cli[2] else "🔴 Vencido"
                     st.write(f"**Estado de suscripción:** {estado_texto}")
