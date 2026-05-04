@@ -59,25 +59,50 @@ try:
 except Exception as e:
     st.error(f"Error conectando a la base de datos: {e}")
 
-# --- NUEVA LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM INTERACTIVO ---
+# --- NUEVA LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM CON SOPORTE PARA BOTONES ---
 async def enviar_y_recibir_bot(session_str, bot_username, mensaje):
     session_str = session_str.strip()
     try:
         async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
             if mensaje:
-                await client.send_message(bot_username, mensaje)
-                await asyncio.sleep(3) # Esperamos 3 segundos para que el bot responda
+                # Detectar si la orden viene de hacer clic en un botón de Streamlit
+                if mensaje.startswith("[BOTON]"):
+                    btn_text = mensaje.replace("[BOTON]", "")
+                    mensajes_recientes = await client.get_messages(bot_username, limit=5)
+                    for m in mensajes_recientes:
+                        if m.reply_markup:
+                            try:
+                                await m.click(text=btn_text) # Ejecuta el clic real en Telegram
+                                break
+                            except Exception as e:
+                                pass
+                else:
+                    await client.send_message(bot_username, mensaje)
+                await asyncio.sleep(3) # Esperamos 3 segundos para que el bot procese y responda
             
-            # Obtenemos los últimos 6 mensajes para armar el historial visual
+            # Obtenemos los últimos 6 mensajes
             mensajes = await client.get_messages(bot_username, limit=6)
             historial = []
             for m in reversed(mensajes):
-                if m.text:
-                    # 'user' eres tú (el cliente en la web), 'assistant' es el bot
-                    historial.append({"role": "user" if m.out else "assistant", "content": m.text})
+                texto = m.text if m.text else ""
+                botones = []
+                # Extraer botones si el mensaje tiene un teclado integrado
+                if m.reply_markup and hasattr(m.reply_markup, 'rows'):
+                    for row in m.reply_markup.rows:
+                        for btn in row.buttons:
+                            if hasattr(btn, 'text'):
+                                botones.append(btn.text)
+                
+                # Solo guardar si hay texto o botones
+                if texto or botones: 
+                    historial.append({
+                        "role": "user" if m.out else "assistant", 
+                        "content": texto if texto else "🤖 [Menú interactivo]",
+                        "botones": botones if not m.out else []
+                    })
             return historial
     except Exception as e:
-        return [{"role": "assistant", "content": f"Error de conexión con Telegram: {str(e)}"}]
+        return [{"role": "assistant", "content": f"Error de conexión con Telegram: {str(e)}", "botones": []}]
 
 # --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal, tipo_solicitud=None):
@@ -163,7 +188,6 @@ st.set_page_config(page_title="Gestión de Cuentas v6.0", layout="centered")
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador"]
 opcion = st.sidebar.selectbox("Navegación", menu)
 
-# Variables de estado para el chat y sesiones
 if 'admin_logueado' not in st.session_state: st.session_state['admin_logueado'] = False
 if 'vendedor_logueado' not in st.session_state: st.session_state['vendedor_logueado'] = False
 if 'id_vend_actual' not in st.session_state: st.session_state['id_vend_actual'] = None
@@ -328,7 +352,7 @@ elif opcion == "Panel Vendedor":
                 b_user = st.text_input("Username del Bot (@ejemplo_bot)")
                 plat_bot = st.selectbox("¿Para qué plataforma?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
                 s_sess = st.text_area("String Session")
-                r_steps = st.text_area("Pasos (Opcional, el bot ahora es interactivo)")
+                r_steps = st.text_area("Pasos")
                 if st.form_submit_button("Añadir Bot"):
                     c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, plataforma, string_session, recipe_steps) VALUES (%s,%s,%s,%s,%s)", 
                               (v_id, b_user, plat_bot, s_sess, r_steps))
@@ -436,7 +460,7 @@ elif opcion == "Panel Cliente":
             tipo_solicitud_cliente = st.radio("¿Qué buscas?", ["Inicio de Sesión (Nuevo dispositivo)", "Acceso Temporal (Viaje / Hogar)"])
         
         if st.button("Extraer Código"):
-            st.session_state['modo_chat'] = False # Reiniciamos el chat cada vez que busca
+            st.session_state['modo_chat'] = False 
             
             if correo_buscar:
                 correo_limpio = correo_buscar.strip().lower()
@@ -461,29 +485,25 @@ elif opcion == "Panel Cliente":
                     st.info(f"Escaneando servidores en busca de correos para: **{correo_buscar}**")
                     codigo_encontrado = None
                     
-                    with st.spinner('Buscando en correos...'):
+                    with st.spinner('Buscando...'):
                         for madre in correos_vendedor:
                             if not codigo_encontrado:
                                 resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4], tipo_solicitud_cliente)
                                 if resultado: codigo_encontrado = resultado
                         
                         if not codigo_encontrado:
-                            # SI NO ESTÁ EN EL CORREO, BUSCAMOS SI HAY UN BOT PARA ESTO
                             bot_encontrado = None
                             for bot in bots_vendedor:
                                 if bot[3] == "Todas las plataformas" or bot[3] == plat:
                                     bot_encontrado = bot
                                     break
                             
-                            # SI HAY BOT, ACTIVAMOS LA CONSOLA INTERACTIVA
                             if bot_encontrado:
                                 st.session_state['modo_chat'] = True
                                 st.session_state['bot_activo'] = bot_encontrado
-                                # Le mandamos el comando inicial (/start o el correo) para despertar al bot
                                 st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_encontrado[1], bot_encontrado[0], "/start"))
                                 st.rerun()
 
-                    # SI LO ENCONTRÓ EN EL CORREO, MUESTRA TUS CAJAS BONITAS
                     if codigo_encontrado:
                         codigo_str = str(codigo_encontrado)
                         if "BLOQUEADO" in codigo_str: 
@@ -500,19 +520,35 @@ elif opcion == "Panel Cliente":
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
 
-        # --- DIBUJAR LA CONSOLA INTERACTIVA ---
+        # --- DIBUJAR LA CONSOLA INTERACTIVA (AHORA CON BOTONES) ---
         if st.session_state.get('modo_chat'):
             st.markdown("---")
             st.subheader("💬 Consola de Conexión en Vivo")
-            st.info("Sigue las instrucciones del bot aquí abajo. Escribe tu respuesta en la barra para enviar.")
+            st.info("Sigue las instrucciones del bot aquí abajo. Usa los botones o escribe tu correo según se requiera.")
+            
+            historial = st.session_state.get('chat_historial', [])
             
             # Dibujar burbujas de chat
-            for msg in st.session_state.get('chat_historial', []):
+            for msg in historial:
                 with st.chat_message(msg["role"]):
                     st.write(msg["content"])
             
-            # Barra para que el cliente escriba
-            respuesta_cliente = st.chat_input("Responde al bot aquí (Ej. disney, o el correo)...")
+            # Extraer y dibujar botones si el ÚLTIMO mensaje del bot los tiene
+            if historial and historial[-1]["role"] == "assistant" and historial[-1].get("botones"):
+                st.write("**👉 Opciones del menú:**")
+                botones = historial[-1]["botones"]
+                cols = st.columns(2) # Mostrar en 2 columnas para que se vea limpio
+                for idx, btn_text in enumerate(botones):
+                    # Dibujamos un botón nativo de Streamlit que simula al de Telegram
+                    if cols[idx % 2].button(btn_text, use_container_width=True, key=f"bot_btn_{idx}"):
+                        bot_actual = st.session_state['bot_activo']
+                        with st.spinner(f"Seleccionando '{btn_text}'..."):
+                            # El prefijo [BOTON] le indica al código que debe hacer un clic real en Telegram
+                            st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}"))
+                        st.rerun()
+            
+            # Barra normal para que el cliente escriba correos o números
+            respuesta_cliente = st.chat_input("Escribe tu respuesta aquí si el bot no tiene botones (Ej. el correo)...")
             
             if respuesta_cliente:
                 bot_actual = st.session_state['bot_activo']
