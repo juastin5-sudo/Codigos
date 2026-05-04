@@ -165,7 +165,9 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
                     continue
 
                 es_temporal_real = "temporal" in asunto_lower or "hogar" in asunto_lower or "viaje" in asunto_lower or "televisor" in asunto_lower or "temporal" in cuerpo_limpio or "hogar" in cuerpo_limpio or "viaje" in cuerpo_limpio
-                es_login_real = "iniciar sesión" in asunto_lower or "iniciar sesión" in cuerpo_limpio or "completa tu solicitud" in cuerpo_limpio or "entrar" in cuerpo_limpio
+                
+                # --- AQUÍ ESTÁ EL ÚNICO CAMBIO: Añadimos "inicio de sesión", "código" y "codigo" ---
+                es_login_real = "iniciar sesión" in asunto_lower or "inicio de sesión" in asunto_lower or "código" in asunto_lower or "codigo" in asunto_lower or "iniciar sesión" in cuerpo_limpio or "completa tu solicitud" in cuerpo_limpio or "entrar" in cuerpo_limpio
                 
                 if es_temporal_real:
                     es_login_real = False
@@ -521,9 +523,7 @@ elif opcion == "Panel Cliente":
                             if bot_encontrado:
                                 st.session_state['modo_chat'] = True
                                 st.session_state['bot_activo'] = bot_encontrado
-                                # CORTINA DE PRIVACIDAD: Capturamos el último ID antes de enviar el /start
                                 st.session_state['bot_min_id'] = asyncio.run(obtener_ultimo_id(bot_encontrado[1], bot_encontrado[0]))
-                                # Mandamos el /start usando ese ID como filtro base
                                 st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_encontrado[1], bot_encontrado[0], "/start", st.session_state['bot_min_id']))
                                 st.rerun()
 
@@ -543,7 +543,6 @@ elif opcion == "Panel Cliente":
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
 
-        # --- DIBUJAR LA CONSOLA INTERACTIVA ---
         if st.session_state.get('modo_chat'):
             st.markdown("---")
             st.subheader("💬 Consola de Conexión en Vivo")
@@ -551,29 +550,23 @@ elif opcion == "Panel Cliente":
             
             historial = st.session_state.get('chat_historial', [])
             
-            # Dibujar burbujas de chat
             for msg in historial:
                 with st.chat_message(msg["role"]):
                     st.write(msg["content"])
             
-            # Extraer y dibujar botones si el ÚLTIMO mensaje del bot los tiene
             if historial and historial[-1]["role"] == "assistant" and historial[-1].get("botones"):
                 botones_originales = historial[-1]["botones"]
                 
-                # --- NUEVO: FILTRO DE BOTONES INVISIBLES ACTUALIZADO ---
-                # Aquí están las palabras clave de los botones que queremos esconder
                 palabras_prohibidas = ["netflix", "max", "prime", "crunchyroll", "configuración", "configuracion", "actualizar hogar", "my disney", "volver al menú principal", "volver al menu principal"]
                 
                 botones_visibles = []
                 for btn in botones_originales:
-                    # Si el texto del botón NO incluye ninguna de las palabras prohibidas, lo guardamos
                     if not any(prohibida in btn.lower() for prohibida in palabras_prohibidas):
                         botones_visibles.append(btn)
                 
                 if botones_visibles:
                     st.write("**👉 Opciones del menú:**")
-                    # Dibujamos solo los botones que pasaron la prueba
-                    cols = st.columns(min(len(botones_visibles), 2)) # Ajusta las columnas dinámicamente
+                    cols = st.columns(min(len(botones_visibles), 2))
                     for idx, btn_text in enumerate(botones_visibles):
                         if cols[idx % 2].button(btn_text, use_container_width=True, key=f"bot_btn_{idx}"):
                             bot_actual = st.session_state['bot_activo']
@@ -582,7 +575,6 @@ elif opcion == "Panel Cliente":
                                 st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}", min_id_actual))
                             st.rerun()
             
-            # Barra normal para que el cliente escriba correos o números
             respuesta_cliente = st.chat_input("Escribe tu respuesta aquí si el bot no tiene botones (Ej. el correo)...")
             
             if respuesta_cliente:
