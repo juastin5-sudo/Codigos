@@ -120,7 +120,8 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
         
-        criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "info@account.netflix.com" TO "{email_cliente_final}")'
+        # MODIFICACIÓN SOLICITADA: Se cambió "info@account.netflix.com" por "netflix.com" para mayor cobertura
+        criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
         
         if not mensajes[0]: return None 
