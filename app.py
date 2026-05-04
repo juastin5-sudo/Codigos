@@ -550,9 +550,9 @@ elif opcion == "Panel Cliente":
             if historial and historial[-1]["role"] == "assistant" and historial[-1].get("botones"):
                 botones_originales = historial[-1]["botones"]
                 
-                # --- NUEVO: FILTRO DE BOTONES INVISIBLES ---
+                # --- NUEVO: FILTRO DE BOTONES INVISIBLES ACTUALIZADO ---
                 # Aquí están las palabras clave de los botones que queremos esconder
-                palabras_prohibidas = ["netflix", "max", "prime", "crunchyroll", "configuración", "configuracion"]
+                palabras_prohibidas = ["netflix", "max", "prime", "crunchyroll", "configuración", "configuracion", "actualizar hogar", "my disney", "volver al menú principal", "volver al menu principal"]
                 
                 botones_visibles = []
                 for btn in botones_originales:
@@ -563,8 +563,9 @@ elif opcion == "Panel Cliente":
                 if botones_visibles:
                     st.write("**👉 Opciones del menú:**")
                     # Dibujamos solo los botones que pasaron la prueba
+                    cols = st.columns(min(len(botones_visibles), 2)) # Ajusta las columnas dinámicamente
                     for idx, btn_text in enumerate(botones_visibles):
-                        if st.button(btn_text, use_container_width=True, key=f"bot_btn_{idx}"):
+                        if cols[idx % 2].button(btn_text, use_container_width=True, key=f"bot_btn_{idx}"):
                             bot_actual = st.session_state['bot_activo']
                             min_id_actual = st.session_state['bot_min_id']
                             with st.spinner(f"Seleccionando '{btn_text}'..."):
