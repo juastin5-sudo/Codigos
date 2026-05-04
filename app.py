@@ -59,30 +59,25 @@ try:
 except Exception as e:
     st.error(f"Error conectando a la base de datos: {e}")
 
-# --- LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM ---
-async def ejecutar_receta_bot(session_str, bot_username, receta_text, email_cliente, modo_test=False):
+# --- NUEVA LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM INTERACTIVO ---
+async def enviar_y_recibir_bot(session_str, bot_username, mensaje):
     session_str = session_str.strip()
     try:
         async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
-            if not receta_text or receta_text.strip() == "":
-                await client.send_message(bot_username, email_cliente)
-                await asyncio.sleep(4)
-            else:
-                pasos = receta_text.strip().split('\n')
-                for paso in pasos:
-                    paso = paso.strip()
-                    if not paso: continue 
-                    if paso.upper() == "[CORREO]":
-                        await client.send_message(bot_username, email_cliente)
-                    else:
-                        await client.send_message(bot_username, paso)
-                    await asyncio.sleep(3) 
+            if mensaje:
+                await client.send_message(bot_username, mensaje)
+                await asyncio.sleep(3) # Esperamos 3 segundos para que el bot responda
             
-            ultimos_msgs = await client.get_messages(bot_username, limit=1)
-            respuesta = ultimos_msgs[0].text if ultimos_msgs else "Sin respuesta del bot."
-            return respuesta
+            # Obtenemos los últimos 6 mensajes para armar el historial visual
+            mensajes = await client.get_messages(bot_username, limit=6)
+            historial = []
+            for m in reversed(mensajes):
+                if m.text:
+                    # 'user' eres tú (el cliente en la web), 'assistant' es el bot
+                    historial.append({"role": "user" if m.out else "assistant", "content": m.text})
+            return historial
     except Exception as e:
-        return f"Error con Bot: {str(e)}"
+        return [{"role": "assistant", "content": f"Error de conexión con Telegram: {str(e)}"}]
 
 # --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal, tipo_solicitud=None):
@@ -168,10 +163,15 @@ st.set_page_config(page_title="Gestión de Cuentas v6.0", layout="centered")
 menu = ["Panel Cliente", "Panel Vendedor", "Administrador"]
 opcion = st.sidebar.selectbox("Navegación", menu)
 
+# Variables de estado para el chat y sesiones
 if 'admin_logueado' not in st.session_state: st.session_state['admin_logueado'] = False
 if 'vendedor_logueado' not in st.session_state: st.session_state['vendedor_logueado'] = False
 if 'id_vend_actual' not in st.session_state: st.session_state['id_vend_actual'] = None
 if 'nombre_vend_actual' not in st.session_state: st.session_state['nombre_vend_actual'] = ""
+
+if 'modo_chat' not in st.session_state: st.session_state['modo_chat'] = False
+if 'chat_historial' not in st.session_state: st.session_state['chat_historial'] = []
+if 'bot_activo' not in st.session_state: st.session_state['bot_activo'] = None
 
 # ==========================================
 # PANEL ADMINISTRADOR
@@ -328,7 +328,7 @@ elif opcion == "Panel Vendedor":
                 b_user = st.text_input("Username del Bot (@ejemplo_bot)")
                 plat_bot = st.selectbox("¿Para qué plataforma?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
                 s_sess = st.text_area("String Session")
-                r_steps = st.text_area("Pasos")
+                r_steps = st.text_area("Pasos (Opcional, el bot ahora es interactivo)")
                 if st.form_submit_button("Añadir Bot"):
                     c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, plataforma, string_session, recipe_steps) VALUES (%s,%s,%s,%s,%s)", 
                               (v_id, b_user, plat_bot, s_sess, r_steps))
@@ -424,6 +424,7 @@ elif opcion == "Panel Cliente":
         st.success(f"Hola, {st.session_state['nombre_cli']}.")
         if st.button("Cerrar Sesión"):
             st.session_state['cliente_logueado'] = False
+            st.session_state['modo_chat'] = False
             st.rerun()
 
         st.markdown("---")
@@ -435,6 +436,8 @@ elif opcion == "Panel Cliente":
             tipo_solicitud_cliente = st.radio("¿Qué buscas?", ["Inicio de Sesión (Nuevo dispositivo)", "Acceso Temporal (Viaje / Hogar)"])
         
         if st.button("Extraer Código"):
+            st.session_state['modo_chat'] = False # Reiniciamos el chat cada vez que busca
+            
             if correo_buscar:
                 correo_limpio = correo_buscar.strip().lower()
                 correos_autorizados = [e.strip().lower() for e in st.session_state.get('correos_permitidos', '').split(',')]
@@ -457,33 +460,62 @@ elif opcion == "Panel Cliente":
 
                     st.info(f"Escaneando servidores en busca de correos para: **{correo_buscar}**")
                     codigo_encontrado = None
-                    with st.spinner('Buscando...'):
+                    
+                    with st.spinner('Buscando en correos...'):
                         for madre in correos_vendedor:
                             if not codigo_encontrado:
                                 resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4], tipo_solicitud_cliente)
                                 if resultado: codigo_encontrado = resultado
                         
                         if not codigo_encontrado:
+                            # SI NO ESTÁ EN EL CORREO, BUSCAMOS SI HAY UN BOT PARA ESTO
+                            bot_encontrado = None
                             for bot in bots_vendedor:
-                                if not codigo_encontrado and (bot[3] == "Todas las plataformas" or bot[3] == plat):
-                                    resultado = asyncio.run(ejecutar_receta_bot(bot[1], bot[0], bot[2], correo_buscar))
-                                    if "Sin respuesta" not in resultado and "Error" not in resultado:
-                                        codigo_encontrado = resultado
+                                if bot[3] == "Todas las plataformas" or bot[3] == plat:
+                                    bot_encontrado = bot
+                                    break
+                            
+                            # SI HAY BOT, ACTIVAMOS LA CONSOLA INTERACTIVA
+                            if bot_encontrado:
+                                st.session_state['modo_chat'] = True
+                                st.session_state['bot_activo'] = bot_encontrado
+                                # Le mandamos el comando inicial (/start o el correo) para despertar al bot
+                                st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_encontrado[1], bot_encontrado[0], "/start"))
+                                st.rerun()
 
+                    # SI LO ENCONTRÓ EN EL CORREO, MUESTRA TUS CAJAS BONITAS
                     if codigo_encontrado:
                         codigo_str = str(codigo_encontrado)
                         if "BLOQUEADO" in codigo_str: 
                             st.error(codigo_str)
-                        # MEJORA: Aumentamos el límite a 150 para atrapar mensajes de bots como el de Disney
                         elif codigo_str.isdigit() or len(codigo_str) < 150: 
                             st.success("✅ ¡Código encontrado!")
-                            # MEJORA VISUAL: Fondo oscuro elegante y texto blanco para que resalte
                             st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px; background-color: #1E1E1E;'><h2 style='color: #FFFFFF; margin:0;'>{codigo_str}</h2></div>", unsafe_allow_html=True)
                         else:
                             st.success("✅ ¡Acceso encontrado!")
-                            # Agregamos <base target="_blank"> para que abra en nueva pestaña y forzamos fondo blanco
                             html_seguro = f'<base target="_blank"><div style="background-color: #FFFFFF; color: #000000; padding: 10px;">{codigo_str}</div>'
                             st.components.v1.html(html_seguro, height=600, scrolling=True)
-                    else: st.error("No se encontró el código solicitado. Revisa el correo original.")
+                    elif not st.session_state.get('modo_chat'): 
+                        st.error("No se encontró el código solicitado. Revisa el correo original.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
+
+        # --- DIBUJAR LA CONSOLA INTERACTIVA ---
+        if st.session_state.get('modo_chat'):
+            st.markdown("---")
+            st.subheader("💬 Consola de Conexión en Vivo")
+            st.info("Sigue las instrucciones del bot aquí abajo. Escribe tu respuesta en la barra para enviar.")
+            
+            # Dibujar burbujas de chat
+            for msg in st.session_state.get('chat_historial', []):
+                with st.chat_message(msg["role"]):
+                    st.write(msg["content"])
+            
+            # Barra para que el cliente escriba
+            respuesta_cliente = st.chat_input("Responde al bot aquí (Ej. disney, o el correo)...")
+            
+            if respuesta_cliente:
+                bot_actual = st.session_state['bot_activo']
+                with st.spinner("Enviando respuesta..."):
+                    st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], respuesta_cliente))
+                st.rerun()
