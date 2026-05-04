@@ -1,4 +1,3 @@
-agrega lo que dices a este codigo 
 import streamlit as st
 import psycopg2
 import pandas as pd
