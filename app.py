@@ -160,14 +160,17 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             elif plataforma == "Netflix":
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                es_aviso_basura = "un nuevo dispositivo" in asunto_lower or "se inició sesión" in asunto_lower
+                # NUEVO FILTRO ANTI-ROBO: Bloquea correos de cambio de cuenta o contraseña
+                es_peligroso = "cambio de cuenta" in asunto_lower or "cambio de cuenta" in cuerpo_limpio or "contraseña" in asunto_lower or "contraseña" in cuerpo_limpio or "email" in asunto_lower
+                
+                es_aviso_basura = "un nuevo dispositivo" in asunto_lower or "se inició sesión" in asunto_lower or es_peligroso
                 if es_aviso_basura:
                     continue
 
                 es_temporal_real = "temporal" in asunto_lower or "hogar" in asunto_lower or "viaje" in asunto_lower or "televisor" in asunto_lower or "temporal" in cuerpo_limpio or "hogar" in cuerpo_limpio or "viaje" in cuerpo_limpio
                 
-                # REVERTIDO A TU VERSIÓN ORIGINAL MÁS LAS NUEVAS VARIACIONES
-                es_login_real = "iniciar sesión" in asunto_lower or "inicio de sesión" in asunto_lower or "iniciar sesión" in cuerpo_limpio or "escribe este código" in cuerpo_limpio or "ingresa este código" in cuerpo_limpio or "completa tu solicitud" in cuerpo_limpio or "entrar" in cuerpo_limpio
+                # SE ELIMINÓ "iniciar sesión" DEL CUERPO PARA EVITAR EL PIE DE PÁGINA
+                es_login_real = "iniciar sesión" in asunto_lower or "inicio de sesión" in asunto_lower or "escribe este código" in cuerpo_limpio or "ingresa este código" in cuerpo_limpio or "completa tu solicitud" in cuerpo_limpio
                 
                 if es_temporal_real:
                     es_login_real = False
