@@ -533,7 +533,7 @@ elif opcion == "Panel Cliente":
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
 
-        # --- DIBUJAR LA CONSOLA INTERACTIVA (AHORA CON BOTONES Y PRIVACIDAD) ---
+        # --- DIBUJAR LA CONSOLA INTERACTIVA ---
         if st.session_state.get('modo_chat'):
             st.markdown("---")
             st.subheader("💬 Consola de Conexión en Vivo")
@@ -548,18 +548,28 @@ elif opcion == "Panel Cliente":
             
             # Extraer y dibujar botones si el ÚLTIMO mensaje del bot los tiene
             if historial and historial[-1]["role"] == "assistant" and historial[-1].get("botones"):
-                st.write("**👉 Opciones del menú:**")
-                botones = historial[-1]["botones"]
-                cols = st.columns(2) # Mostrar en 2 columnas para que se vea limpio
-                for idx, btn_text in enumerate(botones):
-                    # Dibujamos un botón nativo de Streamlit que simula al de Telegram
-                    if cols[idx % 2].button(btn_text, use_container_width=True, key=f"bot_btn_{idx}"):
-                        bot_actual = st.session_state['bot_activo']
-                        min_id_actual = st.session_state['bot_min_id']
-                        with st.spinner(f"Seleccionando '{btn_text}'..."):
-                            # Pasamos el min_id para mantener la cortina de privacidad
-                            st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}", min_id_actual))
-                        st.rerun()
+                botones_originales = historial[-1]["botones"]
+                
+                # --- NUEVO: FILTRO DE BOTONES INVISIBLES ---
+                # Aquí están las palabras clave de los botones que queremos esconder
+                palabras_prohibidas = ["netflix", "max", "prime", "crunchyroll", "configuración", "configuracion"]
+                
+                botones_visibles = []
+                for btn in botones_originales:
+                    # Si el texto del botón NO incluye ninguna de las palabras prohibidas, lo guardamos
+                    if not any(prohibida in btn.lower() for prohibida in palabras_prohibidas):
+                        botones_visibles.append(btn)
+                
+                if botones_visibles:
+                    st.write("**👉 Opciones del menú:**")
+                    # Dibujamos solo los botones que pasaron la prueba
+                    for idx, btn_text in enumerate(botones_visibles):
+                        if st.button(btn_text, use_container_width=True, key=f"bot_btn_{idx}"):
+                            bot_actual = st.session_state['bot_activo']
+                            min_id_actual = st.session_state['bot_min_id']
+                            with st.spinner(f"Seleccionando '{btn_text}'..."):
+                                st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}", min_id_actual))
+                            st.rerun()
             
             # Barra normal para que el cliente escriba correos o números
             respuesta_cliente = st.chat_input("Escribe tu respuesta aquí si el bot no tiene botones (Ej. el correo)...")
@@ -568,6 +578,5 @@ elif opcion == "Panel Cliente":
                 bot_actual = st.session_state['bot_activo']
                 min_id_actual = st.session_state['bot_min_id']
                 with st.spinner("Enviando respuesta..."):
-                    # Pasamos el min_id para mantener la cortina de privacidad
                     st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], respuesta_cliente, min_id_actual))
                 st.rerun()
