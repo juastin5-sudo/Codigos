@@ -37,7 +37,6 @@ def inicializar_db():
                  bot_username TEXT, plataforma TEXT, string_session TEXT, recipe_steps TEXT,
                  FOREIGN KEY (vendedor_id) REFERENCES vendedores(id))''')
 
-    # SE AGREGA LA COLUMNA DE CORREOS PERMITIDOS
     c.execute('''CREATE TABLE IF NOT EXISTS cuentas 
                  (id SERIAL PRIMARY KEY, usuario_cliente TEXT UNIQUE, 
                  pass_cliente TEXT, vendedor_id INTEGER, estado_pago INTEGER DEFAULT 1,
@@ -58,7 +57,7 @@ try:
 except Exception as e:
     st.error(f"Error conectando a la base de datos: {e}")
 
-# --- OBTENER ID DEL ÚLTIMO MENSAJE (CORTINA DE PRIVACIDAD) ---
+# --- OBTENER ID DEL ÚLTIMO MENSAJE ---
 async def obtener_ultimo_id(session_str, bot_username):
     try:
         async with TelegramClient(StringSession(session_str.strip()), MI_API_ID, MI_API_HASH) as client:
@@ -67,7 +66,7 @@ async def obtener_ultimo_id(session_str, bot_username):
     except:
         return 0
 
-# --- NUEVA LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM CON SOPORTE PARA BOTONES Y PRIVACIDAD ---
+# --- LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM ---
 async def enviar_y_recibir_bot(session_str, bot_username, mensaje, min_id=0):
     session_str = session_str.strip()
     try:
@@ -155,8 +154,17 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             elif plataforma == "Netflix":
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # CORRECCIÓN AQUÍ: El filtro de seguridad ahora solo busca en el ASUNTO para no confundirse con el pie de página
-                es_peligroso = "cambio de cuenta" in asunto_lower or "contraseña" in asunto_lower or "email" in asunto_lower
+                # ESCUDO ANTI-ROBO BLINDADO CON TUS CAPTURAS EXACTAS (AHORA INCLUYE EL ASUNTO DE VERIFICACIÓN)
+                es_peligroso = (
+                    "cambio de cuenta" in asunto_lower or 
+                    "contraseña" in asunto_lower or 
+                    "email" in asunto_lower or
+                    "código de verificación" in asunto_lower or
+                    "confirma el cambio" in cuerpo_limpio or
+                    "cambiar la información" in cuerpo_limpio or
+                    "código de verificación" in cuerpo_limpio
+                )
+                
                 if es_peligroso:
                     continue
 
