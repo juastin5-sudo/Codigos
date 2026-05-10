@@ -155,12 +155,11 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             elif plataforma == "Netflix":
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # FILTRO DE SEGURIDAD REAL: Solo bloqueamos cambios de clave o email
-                es_peligroso = "cambio de cuenta" in asunto_lower or "cambio de cuenta" in cuerpo_limpio or "contraseña" in asunto_lower or "contraseña" in cuerpo_limpio or "email" in asunto_lower
+                # CORRECCIÓN AQUÍ: El filtro de seguridad ahora solo busca en el ASUNTO para no confundirse con el pie de página
+                es_peligroso = "cambio de cuenta" in asunto_lower or "contraseña" in asunto_lower or "email" in asunto_lower
                 if es_peligroso:
                     continue
 
-                # REPARACIÓN CON LA CAPTURA EXACTA: Se agregaron las frases exactas del correo
                 es_temporal_real = (
                     "acceso temporal" in asunto_lower or 
                     "acceso temporal" in cuerpo_limpio or 
@@ -175,7 +174,6 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
                     "viaje" in cuerpo_limpio
                 )
                 
-                # Filtros de Login con tus frases exactas mantenidas
                 es_login_real = (
                     "iniciar sesión" in asunto_lower or 
                     "inicio de sesión" in asunto_lower or 
@@ -300,8 +298,8 @@ elif opcion == "Panel Vendedor":
     
     if not st.session_state['vendedor_logueado']:
         with st.form("form_login_vendedor"):
-            u_v = text_input("Usuario")
-            p_v = text_input("Clave", type="password")
+            u_v = st.text_input("Usuario")
+            p_v = st.text_input("Clave", type="password")
             btn_ingresar_vend = st.form_submit_button("Iniciar Sesión")
             
             if btn_ingresar_vend:
