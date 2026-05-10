@@ -45,12 +45,11 @@ def inicializar_db():
                  FOREIGN KEY(vendedor_id) REFERENCES vendedores(id))''')
     conn.commit()
     
-    # TRUCO: Inyectar la columna en tablas que ya existían de antes sin borrar datos
     try:
         c.execute("ALTER TABLE cuentas ADD COLUMN correos_permitidos TEXT DEFAULT ''")
         conn.commit()
     except psycopg2.errors.DuplicateColumn:
-        conn.rollback() # Si ya existe, simplemente lo ignora
+        conn.rollback() 
         
     conn.close()
 
@@ -74,35 +73,31 @@ async def enviar_y_recibir_bot(session_str, bot_username, mensaje, min_id=0):
     try:
         async with TelegramClient(StringSession(session_str), MI_API_ID, MI_API_HASH) as client:
             if mensaje:
-                # Detectar si la orden viene de hacer clic en un botón de Streamlit
                 if mensaje.startswith("[BOTON]"):
                     btn_text = mensaje.replace("[BOTON]", "")
                     mensajes_recientes = await client.get_messages(bot_username, limit=5)
                     for m in mensajes_recientes:
                         if m.reply_markup:
                             try:
-                                await m.click(text=btn_text) # Ejecuta el clic real en Telegram
+                                await m.click(text=btn_text) 
                                 break
                             except Exception as e:
                                 pass
                 else:
                     await client.send_message(bot_username, mensaje)
-                await asyncio.sleep(3) # Esperamos 3 segundos para que el bot procese y responda
+                await asyncio.sleep(3) 
             
-            # Obtenemos los mensajes PERO solo los que sean más nuevos que min_id
             mensajes = await client.get_messages(bot_username, limit=20, min_id=min_id)
             historial = []
             for m in reversed(mensajes):
                 texto = m.text if m.text else ""
                 botones = []
-                # Extraer botones si el mensaje tiene un teclado integrado
                 if m.reply_markup and hasattr(m.reply_markup, 'rows'):
                     for row in m.reply_markup.rows:
                         for btn in row.buttons:
                             if hasattr(btn, 'text'):
                                 botones.append(btn.text)
                 
-                # Solo guardar si hay texto o botones
                 if texto or botones: 
                     historial.append({
                         "role": "user" if m.out else "assistant", 
@@ -120,7 +115,6 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
         
-        # MODIFICACIÓN SOLICITADA: Se cambió "info@account.netflix.com" por "netflix.com" para mayor cobertura
         criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
         
@@ -161,17 +155,36 @@ def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final
             elif plataforma == "Netflix":
                 cuerpo_limpio = html.unescape(re.sub(r'<[^>]+>', '', cuerpo)).lower()
                 
-                # NUEVO FILTRO ANTI-ROBO: Bloquea correos de cambio de cuenta o contraseña
+                # FILTRO DE SEGURIDAD REAL: Solo bloqueamos cambios de clave o email
                 es_peligroso = "cambio de cuenta" in asunto_lower or "cambio de cuenta" in cuerpo_limpio or "contraseña" in asunto_lower or "contraseña" in cuerpo_limpio or "email" in asunto_lower
-                
-                es_aviso_basura = "un nuevo dispositivo" in asunto_lower or "se inició sesión" in asunto_lower or es_peligroso
-                if es_aviso_basura:
+                if es_peligroso:
                     continue
 
-                es_temporal_real = "temporal" in asunto_lower or "hogar" in asunto_lower or "viaje" in asunto_lower or "televisor" in asunto_lower or "temporal" in cuerpo_limpio or "hogar" in cuerpo_limpio or "viaje" in cuerpo_limpio
+                # REPARACIÓN CON LA CAPTURA EXACTA: Se agregaron las frases exactas del correo
+                es_temporal_real = (
+                    "acceso temporal" in asunto_lower or 
+                    "acceso temporal" in cuerpo_limpio or 
+                    "obtener código" in cuerpo_limpio or 
+                    "fuera de tu hogar" in cuerpo_limpio or
+                    "temporal" in asunto_lower or 
+                    "hogar" in asunto_lower or 
+                    "viaje" in asunto_lower or 
+                    "televisor" in asunto_lower or 
+                    "temporal" in cuerpo_limpio or 
+                    "hogar" in cuerpo_limpio or 
+                    "viaje" in cuerpo_limpio
+                )
                 
-                # SE ELIMINÓ "iniciar sesión" DEL CUERPO PARA EVITAR EL PIE DE PÁGINA
-                es_login_real = "iniciar sesión" in asunto_lower or "inicio de sesión" in asunto_lower or "escribe este código" in cuerpo_limpio or "ingresa este código" in cuerpo_limpio or "completa tu solicitud" in cuerpo_limpio
+                # Filtros de Login con tus frases exactas mantenidas
+                es_login_real = (
+                    "iniciar sesión" in asunto_lower or 
+                    "inicio de sesión" in asunto_lower or 
+                    "iniciar sesión" in cuerpo_limpio or 
+                    "escribe este código" in cuerpo_limpio or 
+                    "ingresa este código" in cuerpo_limpio or 
+                    "completa tu solicitud" in cuerpo_limpio or 
+                    "entrar" in cuerpo_limpio
+                )
                 
                 if es_temporal_real:
                     es_login_real = False
@@ -287,8 +300,8 @@ elif opcion == "Panel Vendedor":
     
     if not st.session_state['vendedor_logueado']:
         with st.form("form_login_vendedor"):
-            u_v = st.text_input("Usuario")
-            p_v = st.text_input("Clave", type="password")
+            u_v = text_input("Usuario")
+            p_v = text_input("Clave", type="password")
             btn_ingresar_vend = st.form_submit_button("Iniciar Sesión")
             
             if btn_ingresar_vend:
