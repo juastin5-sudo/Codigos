@@ -868,10 +868,7 @@ elif opcion == "Panel Cliente":
                                     hist_r = correr_con_turno(ejecutar_receta, bot_encontrado[1], bot_encontrado[0], pasos_receta, correo_limpio, defecto=AVISO_OCUPADO)
                                     st.session_state['res_receta'] = {"historial": hist_r, "bot": bot_encontrado}
                                     st.rerun()
-                                st.session_state['modo_chat'] = True
-                                st.session_state['bot_activo'] = bot_encontrado
-                                st.session_state['bot_min_id'] = correr_con_turno(obtener_ultimo_id, bot_encontrado[1], bot_encontrado[0], defecto=0)
-                                st.session_state['chat_historial'] = correr_con_turno(enviar_y_recibir_bot, bot_encontrado[1], bot_encontrado[0], "/start", st.session_state['bot_min_id'], defecto=AVISO_OCUPADO)
+                                st.session_state['res_receta'] = {"historial": [{"id": 0, "role": "assistant", "content": "Error: este servicio todavía no está configurado.", "botones": []}], "bot": bot_encontrado}
                                 st.rerun()
 
                     if codigo_encontrado:
@@ -897,7 +894,10 @@ elif opcion == "Panel Cliente":
             hist_res = res_receta["historial"]
             respuestas = [m["content"] for m in hist_res if m["role"] == "assistant" and not m["content"].startswith("🤖 [Menú")]
             st.markdown("---")
-            if respuestas:
+            falla = (not respuestas) or any(x in respuestas[-1] for x in ("Hay muchos clientes", "Error de conexión", "Error: este servicio"))
+            if falla:
+                st.warning("No pudimos obtener tu código en este momento. Espera 1 minuto e inténtalo de nuevo. Si sigue igual, escríbele a tu proveedor.")
+            else:
                 texto_final = respuestas[-1]
                 cod_r = re.search(r'\b\d{4,8}\b', texto_final)
                 if cod_r:
@@ -906,55 +906,5 @@ elif opcion == "Panel Cliente":
                     with st.expander("Ver el mensaje completo"):
                         st.write(texto_final)
                 else:
-                    st.info("Esto respondió el asistente:")
+                    st.info("Respuesta del sistema:")
                     st.write(texto_final)
-            else:
-                st.warning("El asistente todavía no respondió. Espera un momento y vuelve a pulsar el botón.")
-            if st.button("💬 No es lo que necesito: continuar paso a paso", key="btn_cont_manual"):
-                ids_h = [m.get("id", 0) for m in hist_res if m.get("id")]
-                st.session_state['modo_chat'] = True
-                st.session_state['bot_activo'] = res_receta["bot"]
-                st.session_state['bot_min_id'] = (min(ids_h) - 1) if ids_h else 0
-                st.session_state['chat_historial'] = hist_res
-                st.rerun()
-
-        if st.session_state.get('modo_chat'):
-            st.markdown("---")
-            st.subheader("💬 Consola de Conexión en Vivo")
-            st.info("Sigue las instrucciones del bot aquí abajo. Usa los botones o escribe tu correo según se requiera.")
-            
-            historial = st.session_state.get('chat_historial', [])
-            
-            for msg in historial:
-                with st.chat_message(msg["role"]):
-                    st.write(msg["content"])
-            
-            if historial and historial[-1]["role"] == "assistant" and historial[-1].get("botones"):
-                botones_originales = historial[-1]["botones"]
-                
-                palabras_prohibidas = ["netflix", "max", "prime", "crunchyroll", "configuración", "configuracion", "actualizar hogar", "my disney", "volver al menú principal", "volver al menu principal"]
-                
-                botones_visibles = []
-                for btn in botones_originales:
-                    if not any(prohibida in btn.lower() for prohibida in palabras_prohibidas):
-                        botones_visibles.append(btn)
-                
-                if botones_visibles:
-                    st.write("**👉 Opciones del menú:**")
-                    cols = st.columns(min(len(botones_visibles), 2))
-                    for idx, btn_text in enumerate(botones_visibles):
-                        if cols[idx % 2].button(btn_text, use_container_width=True, key=f"bot_btn_{idx}"):
-                            bot_actual = st.session_state['bot_activo']
-                            min_id_actual = st.session_state['bot_min_id']
-                            with st.spinner(f"Seleccionando '{btn_text}'..."):
-                                st.session_state['chat_historial'] = correr_con_turno(enviar_y_recibir_bot, bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}", min_id_actual, defecto=AVISO_OCUPADO)
-                            st.rerun()
-            
-            respuesta_cliente = st.chat_input("Escribe tu respuesta aquí si el bot no tiene botones (Ej. el correo)...")
-            
-            if respuesta_cliente:
-                bot_actual = st.session_state['bot_activo']
-                min_id_actual = st.session_state['bot_min_id']
-                with st.spinner("Enviando respuesta..."):
-                    st.session_state['chat_historial'] = correr_con_turno(enviar_y_recibir_bot, bot_actual[1], bot_actual[0], respuesta_cliente, min_id_actual, defecto=AVISO_OCUPADO)
-                st.rerun()
