@@ -204,6 +204,31 @@ async def enviar_y_recibir_bot(session_str, bot_username, mensaje, min_id=0):
     except Exception as e:
         return [{"role": "assistant", "content": f"Error de conexión con Telegram: {str(e)}", "botones": []}]
 
+async def iniciar_grabacion(session_str, bot_username):
+    """Una sola conexión: anota el último mensaje, envía /start y devuelve (id_inicial, conversación)."""
+    try:
+        async with TelegramClient(StringSession(session_str.strip()), MI_API_ID, MI_API_HASH) as client:
+            last = await client.get_messages(bot_username, limit=1)
+            min_id = last[0].id if last else 0
+            await client.send_message(bot_username, "/start")
+            await asyncio.sleep(3)
+            mensajes = await client.get_messages(bot_username, limit=20, min_id=min_id)
+            historial = []
+            for m in reversed(mensajes):
+                botones = []
+                if m.reply_markup and hasattr(m.reply_markup, 'rows'):
+                    for row in m.reply_markup.rows:
+                        for btn in row.buttons:
+                            if hasattr(btn, 'text'):
+                                botones.append(btn.text)
+                if m.text or botones:
+                    historial.append({"role": "user" if m.out else "assistant",
+                                      "content": m.text if m.text else "🤖 [Menú interactivo]",
+                                      "botones": botones if not m.out else []})
+            return min_id, historial
+    except Exception as e:
+        return None, f"Error de conexión con Telegram: {e}"
+
 # --- CÓDIGOS POR CORREO PARA DISNEY+ Y PRIME VIDEO ---
 MINUTOS_VALIDOS = 30  # un código más viejo que esto ya venció, no se entrega
 
@@ -705,11 +730,15 @@ elif opcion == "Panel Vendedor":
                 fila_bot = bots_t[nombres_b.index(bot_g)]
                 correo_g = st.text_input("Correo de prueba (cuando lo escribas en el bot, se guardará como {correo}):", key="rec_correo").strip().lower()
                 if st.button("▶️ Empezar grabación", key="rec_inicio"):
-                    with st.spinner("Conectando con el bot..."):
-                        min_g = correr_con_turno(obtener_ultimo_id, fila_bot[1], fila_bot[0], defecto=0)
-                        hist_g = correr_con_turno(enviar_y_recibir_bot, fila_bot[1], fila_bot[0], "/start", min_g, defecto=AVISO_OCUPADO)
-                    st.session_state['rec'] = {"bot": fila_bot[4], "min": min_g, "pasos": ["/start"], "hist": hist_g}
-                    st.rerun()
+                    with st.spinner("Conectando con el bot (hasta 40 segundos)..."):
+                        res_g = correr_con_turno(iniciar_grabacion, fila_bot[1], fila_bot[0], defecto=None, espera_max=20, duracion_max=40)
+                    if not res_g:
+                        st.error("No se pudo conectar: Telegram tardó demasiado o hay otra consulta en curso. Espera 1 minuto y vuelve a intentar.")
+                    elif res_g[0] is None:
+                        st.error(res_g[1])
+                    else:
+                        st.session_state['rec'] = {"bot": fila_bot[4], "min": res_g[0], "pasos": ["/start"], "hist": res_g[1]}
+                        st.rerun()
                 rec = st.session_state.get('rec')
                 if rec and rec["bot"] == fila_bot[4]:
                     st.markdown("**Conversación con el bot:**")
