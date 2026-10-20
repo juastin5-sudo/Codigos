@@ -8,15 +8,22 @@ import requests
 import asyncio
 import html
 import time
+import threading
 from email.header import decode_header
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 # --- CONSTANTES ---
 MI_API_ID = 34062718
 MI_API_HASH = 'ca9d5cbc6ce832c6660f949a5567a159'
-DB_URL = "postgresql://neondb_owner:npg_HtF1S5TOhcpd@ep-square-truth-aiq0354u-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+try:
+    DB_URL = str(st.secrets["NEON_URL"]).strip()
+except Exception:
+    DB_URL = ""
+    st.error("Falta la dirección de la base de datos. En Streamlit > Settings > Secrets agrega: NEON_URL = \"...\"")
+    st.stop()
 
 # --- 1. CONFIGURACIÓN DE BASE DE DATOS EN LA NUBE ---
 def inicializar_db():
@@ -66,6 +73,84 @@ async def obtener_ultimo_id(session_str, bot_username):
     except:
         return 0
 
+# --- TURNOS PARA TELEGRAM: solo un cliente a la vez usa tu cuenta de Telegram ---
+@st.cache_resource
+def candado_telegram():
+    return threading.Lock()
+
+AVISO_OCUPADO = [{"id": 0, "role": "assistant", "content": "Hay muchos clientes pidiendo código en este momento. Intenta de nuevo en un minuto.", "botones": []}]
+
+def correr_con_turno(coro_fn, *args, defecto=None, espera_max=90, duracion_max=75):
+    """Ejecuta una acción de Telegram respetando el turno. Si hay otro cliente usando Telegram, espera a que termine."""
+    cand = candado_telegram()
+    if not cand.acquire(blocking=False):
+        aviso = st.empty()
+        aviso.info("⏳ Hay otro cliente pidiendo su código. Tu turno empieza en unos segundos, no cierres la página...")
+        obtuvo = cand.acquire(timeout=espera_max)
+        aviso.empty()
+        if not obtuvo:
+            return defecto
+    try:
+        return asyncio.run(asyncio.wait_for(coro_fn(*args), timeout=duracion_max))
+    except Exception:
+        return defecto
+    finally:
+        cand.release()
+
+# --- RECETA AUTOMÁTICA DEL BOT (para que el cliente no tenga que seguir los pasos) ---
+async def ejecutar_receta(session_str, bot_username, pasos, correo):
+    """Hace por el cliente los pasos del bot. Cada paso es una línea:
+       /start            -> envía ese texto al bot
+       [BOTON]Texto      -> pulsa el botón que contenga ese texto
+       {correo}          -> se cambia por el correo que escribió el cliente
+    Devuelve la conversación (igual que el chat manual)."""
+    try:
+        async with TelegramClient(StringSession(session_str.strip()), MI_API_ID, MI_API_HASH) as client:
+            previos = await client.get_messages(bot_username, limit=1)
+            min_id = previos[0].id if previos else 0
+            for paso in pasos:
+                paso = paso.strip().replace("{correo}", correo)
+                if not paso:
+                    continue
+                if paso.startswith("[BOTON]"):
+                    objetivo = paso[len("[BOTON]"):].strip().lower()
+                    pulsado = False
+                    for m in await client.get_messages(bot_username, limit=5):
+                        for fila in (m.buttons or []):
+                            for b in fila:
+                                if objetivo in (b.text or "").lower():
+                                    await b.click()
+                                    pulsado = True
+                                    break
+                            if pulsado:
+                                break
+                        if pulsado:
+                            break
+                else:
+                    await client.send_message(bot_username, paso)
+                await asyncio.sleep(3)
+            await asyncio.sleep(5)  # tiempo extra para la respuesta final del bot
+            mensajes = await client.get_messages(bot_username, limit=20, min_id=min_id)
+            historial = []
+            for m in reversed(mensajes):
+                texto = m.text if m.text else ""
+                botones = []
+                if m.reply_markup and hasattr(m.reply_markup, 'rows'):
+                    for row in m.reply_markup.rows:
+                        for btn in row.buttons:
+                            if hasattr(btn, 'text'):
+                                botones.append(btn.text)
+                if texto or botones:
+                    historial.append({
+                        "id": m.id,
+                        "role": "user" if m.out else "assistant",
+                        "content": texto if texto else "🤖 [Menú interactivo]",
+                        "botones": botones if not m.out else []
+                    })
+            return historial
+    except Exception as e:
+        return [{"id": 0, "role": "assistant", "content": f"Error de conexión con Telegram: {str(e)}", "botones": []}]
+
 # --- LÓGICA DE EXTRACCIÓN: BOT DE TELEGRAM ---
 async def enviar_y_recibir_bot(session_str, bot_username, mensaje, min_id=0):
     session_str = session_str.strip()
@@ -107,12 +192,103 @@ async def enviar_y_recibir_bot(session_str, bot_username, mensaje, min_id=0):
     except Exception as e:
         return [{"role": "assistant", "content": f"Error de conexión con Telegram: {str(e)}", "botones": []}]
 
+# --- CÓDIGOS POR CORREO PARA DISNEY+ Y PRIME VIDEO ---
+MINUTOS_VALIDOS = 30  # un código más viejo que esto ya venció, no se entrega
+
+def _texto_limpio(msg):
+    """(asunto, texto del cuerpo sin etiquetas HTML)."""
+    asunto = ""
+    if msg.get("Subject"):
+        partes = decode_header(msg.get("Subject"))
+        for p, enc in partes:
+            asunto += p.decode(enc or 'utf-8', errors='ignore') if isinstance(p, bytes) else str(p)
+    cuerpo = ""
+    for part in (msg.walk() if msg.is_multipart() else [msg]):
+        if part.get_content_type() in ("text/plain", "text/html"):
+            try:
+                cuerpo += " " + part.get_payload(decode=True).decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+    texto = html.unescape(re.sub(r'<[^>]+>', ' ', re.sub(r'(?is)<(style|script).*?</\1>', ' ', cuerpo)))
+    return asunto, re.sub(r'\s+', ' ', texto)
+
+def _es_reciente(msg, minutos=MINUTOS_VALIDOS):
+    try:
+        f = parsedate_to_datetime(msg.get("Date"))
+        if f.tzinfo is None:
+            f = f.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - f) <= timedelta(minutes=minutos)
+    except Exception:
+        return True
+
+def _es_correo_peligroso(asunto):
+    """Correos para cambiar la contraseña o el correo de la cuenta: nunca se entregan al cliente."""
+    a = asunto.lower()
+    es_codigo_unico = any(k in a for k in ("un solo uso", "one-time", "one time", "único", "unico", "acceso", "sign in", "log in", "login"))
+    if any(k in a for k in ("restablec", "reset", "cambiar el correo", "change your email", "cambio de correo", "actualiz", "update your")):
+        return True
+    if ("contraseña" in a or "password" in a) and not es_codigo_unico:
+        return True
+    return False
+
+def _extraer_codigo_6(texto):
+    m = re.search(r'(?:c[oó]digo|code|otp|passcode|contrase[nñ]a de un solo uso)[^0-9]{0,80}(\d{6})\b', texto, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'\b(\d{6})\b', texto)
+    return m.group(1) if m else None
+
+def buscar_codigo_simple(mail, email_cliente, plataforma):
+    """Busca el código más reciente (menos de 30 minutos) enviado a ese correo por Amazon / Prime Video."""
+    remitentes = ["amazon", "primevideo"]
+    ids = set()
+    for rem in remitentes:
+        status, mensajes = mail.search(None, f'(FROM "{rem}" TO "{email_cliente}")')
+        if mensajes and mensajes[0]:
+            ids.update(int(i) for i in mensajes[0].split())
+    for i in sorted(ids, reverse=True)[:15]:
+        res, datos = mail.fetch(str(i), '(RFC822)')
+        msg = email.message_from_bytes(datos[0][1])
+        if not _es_reciente(msg):
+            continue
+        asunto, texto = _texto_limpio(msg)
+        if _es_correo_peligroso(asunto):
+            continue
+        codigo = _extraer_codigo_6(asunto + " " + texto)
+        if codigo:
+            return codigo
+    return None
+
+def diagnostico_correos(email_madre, pass_app_madre, email_cliente, imap_serv, cantidad=10):
+    """Últimos correos recibidos para un correo: quién lo envió, asunto, fecha y si se detectó un código."""
+    filas = []
+    mail = imaplib.IMAP4_SSL(imap_serv)
+    mail.login(email_madre, pass_app_madre)
+    mail.select("inbox")
+    status, mensajes = mail.search(None, f'(TO "{email_cliente}")')
+    ids = mensajes[0].split() if mensajes and mensajes[0] else []
+    for i in reversed(ids[-cantidad:]):
+        res, datos = mail.fetch(i, '(RFC822)')
+        msg = email.message_from_bytes(datos[0][1])
+        asunto, texto = _texto_limpio(msg)
+        filas.append({"De": str(msg.get("From", ""))[:60], "Asunto": asunto[:80], "Fecha": str(msg.get("Date", ""))[:31],
+                      "¿Reciente?": "sí" if _es_reciente(msg) else "no", "¿Bloqueado?": "sí" if _es_correo_peligroso(asunto) else "no",
+                      "Código detectado": _extraer_codigo_6(asunto + " " + texto) or ""})
+    try:
+        mail.logout()
+    except Exception:
+        pass
+    return filas
+
 # --- LÓGICA DE EXTRACCIÓN: CORREOS (IMAP) ---
 def obtener_codigo_centralizado(email_madre, pass_app_madre, email_cliente_final, plataforma, imap_serv, filtro_login, filtro_temporal, tipo_solicitud=None):
     try:
         mail = imaplib.IMAP4_SSL(imap_serv)
         mail.login(email_madre, pass_app_madre)
         mail.select("inbox")
+
+        if plataforma == "Prime Video":
+            return buscar_codigo_simple(mail, email_cliente_final, plataforma)
         
         criterio = f'(FROM "amazon.com" TO "{email_cliente_final}")' if plataforma == "Prime Video" else f'(FROM "netflix.com" TO "{email_cliente_final}")'
         status, mensajes = mail.search(None, criterio)
@@ -342,7 +518,7 @@ elif opcion == "Panel Vendedor":
         conn = psycopg2.connect(DB_URL)
         c = conn.cursor()
             
-        tab_fuentes, tab_clientes = st.tabs(["⚙️ Fuentes de Extracción", "👥 Gestión de Clientes"])
+        tab_fuentes, tab_clientes, tab_diag = st.tabs(["⚙️ Fuentes de Extracción", "👥 Gestión de Clientes", "🔍 Diagnóstico de correos"])
         
         with tab_fuentes:
             st.info("Registra tus correos madre aquí.")
@@ -387,7 +563,7 @@ elif opcion == "Panel Vendedor":
                 b_user = st.text_input("Username del Bot (@ejemplo_bot)")
                 plat_bot = st.selectbox("¿Para qué plataforma?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
                 s_sess = st.text_area("String Session")
-                r_steps = st.text_area("Pasos (Opcional, el bot ahora es interactivo)")
+                r_steps = st.text_area("Pasos automáticos (opcional, uno por línea)", help="Ejemplo:\n/start\n[BOTON]Disney\n[BOTON]Código\n{correo}\n\n/texto = se lo envía al bot. [BOTON]texto = pulsa ese botón. {correo} = el correo que escribe el cliente. Solo funciona si eliges la plataforma exacta (no \"Todas\").")
                 if st.form_submit_button("Añadir Bot"):
                     c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, plataforma, string_session, recipe_steps) VALUES (%s,%s,%s,%s,%s)", 
                               (v_id, b_user, plat_bot, s_sess, r_steps))
@@ -395,7 +571,7 @@ elif opcion == "Panel Vendedor":
                     st.success("Bot añadido.")
                     st.rerun()
 
-            c.execute("SELECT id, bot_username, plataforma FROM bots_telegram WHERE vendedor_id=%s", (v_id,))
+            c.execute("SELECT id, bot_username, plataforma, recipe_steps FROM bots_telegram WHERE vendedor_id=%s", (v_id,))
             bots_guardados = c.fetchall()
             if bots_guardados:
                 st.write("**Tus bots activos:**")
@@ -406,6 +582,12 @@ elif opcion == "Panel Vendedor":
                         c.execute("DELETE FROM bots_telegram WHERE id=%s", (bg[0],))
                         conn.commit()
                         st.rerun()
+                    with st.expander(f"✏️ Pasos automáticos de {bg[1]} ({bg[2]})"):
+                        pasos_nuevos = st.text_area("Un paso por línea (/texto, [BOTON]texto, {correo})", value=bg[3] or "", key=f"rs_{bg[0]}", height=120)
+                        if st.button("💾 Guardar pasos", key=f"rsb_{bg[0]}"):
+                            c.execute("UPDATE bots_telegram SET recipe_steps=%s WHERE id=%s", (pasos_nuevos, bg[0]))
+                            conn.commit()
+                            st.success("Pasos guardados.")
 
         with tab_clientes:
             st.subheader("👥 Gestión de Clientes")
@@ -457,6 +639,48 @@ elif opcion == "Panel Vendedor":
                             c.execute("DELETE FROM cuentas WHERE id=%s", (cli[0],))
                             conn.commit()
                             st.rerun()
+
+        with tab_diag:
+            st.subheader("🔍 ¿Por qué no me sale el código?")
+            st.caption("Muestra los últimos correos que llegaron a una cuenta, quién los envió, el asunto y si la página detectó un código. Sirve para ver cómo llegan los correos de Prime Video (Netflix y Amazon).")
+            c.execute("SELECT correo_imap, password_app, servidor_imap FROM correos_madre WHERE vendedor_id=%s", (v_id,))
+            madres_d = c.fetchall()
+            if not madres_d:
+                st.info("Primero registra un correo madre en 'Fuentes de Extracción'.")
+            else:
+                madre_sel = st.selectbox("Correo madre donde llegan los correos:", [m[0] for m in madres_d], key="diag_madre")
+                correo_diag = st.text_input("Correo de la cuenta de streaming (al que llegan los códigos):", key="diag_correo").strip().lower()
+                if st.button("Buscar correos", key="diag_btn") and correo_diag:
+                    datos_m = next(m for m in madres_d if m[0] == madre_sel)
+                    try:
+                        with st.spinner("Revisando..."):
+                            filas_d = diagnostico_correos(datos_m[0], datos_m[1], correo_diag, datos_m[2])
+                        if filas_d:
+                            st.dataframe(pd.DataFrame(filas_d), hide_index=True)
+                        else:
+                            st.warning("No llegó ningún correo para esa dirección a ese correo madre. Revisa que el reenvío o la dirección estén bien.")
+                    except Exception as e_d:
+                        st.error(f"No pude entrar al correo: {e_d}")
+
+            st.markdown("---")
+            st.subheader("🤖 Probar los pasos automáticos de un bot")
+            c.execute("SELECT bot_username, string_session, recipe_steps, plataforma FROM bots_telegram WHERE vendedor_id=%s", (v_id,))
+            bots_t = c.fetchall()
+            bots_con_pasos = [b for b in bots_t if str(b[2] or "").strip()]
+            if not bots_con_pasos:
+                st.info("Ningún bot tiene pasos automáticos todavía. Agrégalos en 'Fuentes de Extracción'.")
+            else:
+                bot_sel = st.selectbox("Bot:", [f"{b[0]} ({b[3]})" for b in bots_con_pasos], key="diag_bot")
+                correo_prueba = st.text_input("Correo de prueba:", key="diag_bot_correo").strip().lower()
+                if st.button("Ejecutar prueba", key="diag_bot_btn") and correo_prueba:
+                    bot_t = bots_con_pasos[[f"{b[0]} ({b[3]})" for b in bots_con_pasos].index(bot_sel)]
+                    with st.spinner("Ejecutando los pasos..."):
+                        hist_t = correr_con_turno(ejecutar_receta, bot_t[1], bot_t[0], [p for p in str(bot_t[2]).splitlines() if p.strip()], correo_prueba, defecto=AVISO_OCUPADO)
+                    for m_t in hist_t:
+                        with st.chat_message(m_t["role"]):
+                            st.write(m_t["content"])
+                            if m_t.get("botones"):
+                                st.caption("Botones: " + " | ".join(m_t["botones"]))
         conn.close()
 
 # ==========================================
@@ -499,11 +723,15 @@ elif opcion == "Panel Cliente":
         correo_buscar = st.text_input("Correo de streaming:")
         
         tipo_solicitud_cliente = None
+        if plat in ("Disney+", "Prime Video"):
+            st.info("1️⃣ En tu TV o celular, pide el código de acceso.  \n2️⃣ Escribe aquí el correo de la cuenta.  \n3️⃣ Pulsa el botón y copia tu código.")
         if plat == "Netflix":
             tipo_solicitud_cliente = st.radio("¿Qué buscas?", ["Inicio de Sesión (Nuevo dispositivo)", "Acceso Temporal (Viaje / Hogar)"])
         
-        if st.button("Extraer Código"):
+        if st.button("Obtener mi código" if plat in ("Disney+", "Prime Video") else "Extraer Código"):
             st.session_state['modo_chat'] = False 
+            st.session_state['sin_codigo_plat'] = None
+            st.session_state['res_receta'] = None
             
             if correo_buscar:
                 correo_limpio = correo_buscar.strip().lower()
@@ -529,12 +757,12 @@ elif opcion == "Panel Cliente":
                     codigo_encontrado = None
                     
                     with st.spinner('Buscando...'):
-                        for madre in correos_vendedor:
+                        for madre in ([] if plat == "Disney+" else correos_vendedor):
                             if not codigo_encontrado:
                                 resultado = obtener_codigo_centralizado(madre[0], madre[1], correo_buscar, plat, madre[2], madre[3], madre[4], tipo_solicitud_cliente)
                                 if resultado: codigo_encontrado = resultado
                         
-                        if not codigo_encontrado:
+                        if not codigo_encontrado and plat != "Prime Video":
                             bot_encontrado = None
                             for bot in bots_vendedor:
                                 if bot[3] == "Todas las plataformas" or bot[3] == plat:
@@ -542,10 +770,15 @@ elif opcion == "Panel Cliente":
                                     break
                             
                             if bot_encontrado:
+                                pasos_receta = [p for p in str(bot_encontrado[2] or "").splitlines() if p.strip()] if bot_encontrado[3] == plat else []
+                                if pasos_receta:
+                                    hist_r = correr_con_turno(ejecutar_receta, bot_encontrado[1], bot_encontrado[0], pasos_receta, correo_limpio, defecto=AVISO_OCUPADO)
+                                    st.session_state['res_receta'] = {"historial": hist_r, "bot": bot_encontrado}
+                                    st.rerun()
                                 st.session_state['modo_chat'] = True
                                 st.session_state['bot_activo'] = bot_encontrado
-                                st.session_state['bot_min_id'] = asyncio.run(obtener_ultimo_id(bot_encontrado[1], bot_encontrado[0]))
-                                st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_encontrado[1], bot_encontrado[0], "/start", st.session_state['bot_min_id']))
+                                st.session_state['bot_min_id'] = correr_con_turno(obtener_ultimo_id, bot_encontrado[1], bot_encontrado[0], defecto=0)
+                                st.session_state['chat_historial'] = correr_con_turno(enviar_y_recibir_bot, bot_encontrado[1], bot_encontrado[0], "/start", st.session_state['bot_min_id'], defecto=AVISO_OCUPADO)
                                 st.rerun()
 
                     if codigo_encontrado:
@@ -559,10 +792,38 @@ elif opcion == "Panel Cliente":
                             st.success("✅ ¡Acceso encontrado!")
                             html_seguro = f'<base target="_blank"><div style="background-color: #FFFFFF; color: #000000; padding: 10px;">{codigo_str}</div>'
                             st.components.v1.html(html_seguro, height=600, scrolling=True)
+                    elif plat == "Prime Video":
+                        st.warning("Todavía no llega tu código. Pídelo de nuevo en la app, espera 1 minuto y pulsa el botón otra vez. (Los códigos duran pocos minutos.)")
                     elif not st.session_state.get('modo_chat'): 
                         st.error("No se encontró el código solicitado. Revisa el correo original.")
             else:
                 st.warning("Por favor, ingresa el correo de streaming.")
+
+        res_receta = st.session_state.get('res_receta')
+        if res_receta and not st.session_state.get('modo_chat'):
+            hist_res = res_receta["historial"]
+            respuestas = [m["content"] for m in hist_res if m["role"] == "assistant" and not m["content"].startswith("🤖 [Menú")]
+            st.markdown("---")
+            if respuestas:
+                texto_final = respuestas[-1]
+                cod_r = re.search(r'\b\d{4,8}\b', texto_final)
+                if cod_r:
+                    st.success("✅ ¡Listo! Este es tu código:")
+                    st.markdown(f"<div style='text-align: center; border: 2px dashed #4CAF50; padding: 20px; border-radius: 10px; background-color: #1E1E1E;'><h2 style='color: #FFFFFF; margin:0;'>{cod_r.group(0)}</h2></div>", unsafe_allow_html=True)
+                    with st.expander("Ver el mensaje completo"):
+                        st.write(texto_final)
+                else:
+                    st.info("Esto respondió el asistente:")
+                    st.write(texto_final)
+            else:
+                st.warning("El asistente todavía no respondió. Espera un momento y vuelve a pulsar el botón.")
+            if st.button("💬 No es lo que necesito: continuar paso a paso", key="btn_cont_manual"):
+                ids_h = [m.get("id", 0) for m in hist_res if m.get("id")]
+                st.session_state['modo_chat'] = True
+                st.session_state['bot_activo'] = res_receta["bot"]
+                st.session_state['bot_min_id'] = (min(ids_h) - 1) if ids_h else 0
+                st.session_state['chat_historial'] = hist_res
+                st.rerun()
 
         if st.session_state.get('modo_chat'):
             st.markdown("---")
@@ -593,7 +854,7 @@ elif opcion == "Panel Cliente":
                             bot_actual = st.session_state['bot_activo']
                             min_id_actual = st.session_state['bot_min_id']
                             with st.spinner(f"Seleccionando '{btn_text}'..."):
-                                st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}", min_id_actual))
+                                st.session_state['chat_historial'] = correr_con_turno(enviar_y_recibir_bot, bot_actual[1], bot_actual[0], f"[BOTON]{btn_text}", min_id_actual, defecto=AVISO_OCUPADO)
                             st.rerun()
             
             respuesta_cliente = st.chat_input("Escribe tu respuesta aquí si el bot no tiene botones (Ej. el correo)...")
@@ -602,5 +863,5 @@ elif opcion == "Panel Cliente":
                 bot_actual = st.session_state['bot_activo']
                 min_id_actual = st.session_state['bot_min_id']
                 with st.spinner("Enviando respuesta..."):
-                    st.session_state['chat_historial'] = asyncio.run(enviar_y_recibir_bot(bot_actual[1], bot_actual[0], respuesta_cliente, min_id_actual))
+                    st.session_state['chat_historial'] = correr_con_turno(enviar_y_recibir_bot, bot_actual[1], bot_actual[0], respuesta_cliente, min_id_actual, defecto=AVISO_OCUPADO)
                 st.rerun()
