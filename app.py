@@ -112,6 +112,12 @@ async def ejecutar_receta(session_str, bot_username, pasos, correo):
                 paso = paso.strip().replace("{correo}", correo)
                 if not paso:
                     continue
+                if paso.upper().startswith("[ESPERA]"):
+                    try:
+                        await asyncio.sleep(min(int(paso[len("[ESPERA]"):].strip()), 30))
+                    except ValueError:
+                        pass
+                    continue
                 if paso.startswith("[BOTON]"):
                     objetivo = paso[len("[BOTON]"):].strip().lower()
                     pulsado = False
@@ -129,7 +135,13 @@ async def ejecutar_receta(session_str, bot_username, pasos, correo):
                 else:
                     await client.send_message(bot_username, paso)
                 await asyncio.sleep(3)
-            await asyncio.sleep(5)  # tiempo extra para la respuesta final del bot
+            await asyncio.sleep(3)  # tiempo extra para la respuesta final del bot
+            for _ in range(4):      # si la respuesta todavía no trae un código, espera un poco más (máx. 12 s)
+                recientes = await client.get_messages(bot_username, limit=3, min_id=min_id)
+                entrantes = [m for m in recientes if not m.out]
+                if entrantes and re.search(r'\b\d{4,8}\b', entrantes[0].text or ""):
+                    break
+                await asyncio.sleep(3)
             mensajes = await client.get_messages(bot_username, limit=20, min_id=min_id)
             historial = []
             for m in reversed(mensajes):
@@ -563,7 +575,7 @@ elif opcion == "Panel Vendedor":
                 b_user = st.text_input("Username del Bot (@ejemplo_bot)")
                 plat_bot = st.selectbox("¿Para qué plataforma?", ["Todas las plataformas", "Netflix", "Prime Video", "Disney+", "Otros"])
                 s_sess = st.text_area("String Session")
-                r_steps = st.text_area("Pasos automáticos (opcional, uno por línea)", help="Ejemplo:\n/start\n[BOTON]Disney\n[BOTON]Código\n{correo}\n\n/texto = se lo envía al bot. [BOTON]texto = pulsa ese botón. {correo} = el correo que escribe el cliente. Solo funciona si eliges la plataforma exacta (no \"Todas\").")
+                r_steps = st.text_area("Pasos automáticos (opcional, uno por línea)", help="Ejemplo:\n/start\n[BOTON]Disney\n[BOTON]Código\n{correo}\n\n/texto = se lo envía al bot. [BOTON]texto = pulsa ese botón. {correo} = el correo que escribe el cliente. [ESPERA]10 = espera 10 segundos. Solo funciona si eliges la plataforma exacta (no \"Todas\").")
                 if st.form_submit_button("Añadir Bot"):
                     c.execute("INSERT INTO bots_telegram (vendedor_id, bot_username, plataforma, string_session, recipe_steps) VALUES (%s,%s,%s,%s,%s)", 
                               (v_id, b_user, plat_bot, s_sess, r_steps))
@@ -664,7 +676,7 @@ elif opcion == "Panel Vendedor":
 
             st.markdown("---")
             st.subheader("🤖 Probar los pasos automáticos de un bot")
-            c.execute("SELECT bot_username, string_session, recipe_steps, plataforma FROM bots_telegram WHERE vendedor_id=%s", (v_id,))
+            c.execute("SELECT bot_username, string_session, recipe_steps, plataforma, id FROM bots_telegram WHERE vendedor_id=%s", (v_id,))
             bots_t = c.fetchall()
             bots_con_pasos = [b for b in bots_t if str(b[2] or "").strip()]
             if not bots_con_pasos:
@@ -681,6 +693,58 @@ elif opcion == "Panel Vendedor":
                             st.write(m_t["content"])
                             if m_t.get("botones"):
                                 st.caption("Botones: " + " | ".join(m_t["botones"]))
+
+            st.markdown("---")
+            st.subheader("🎙️ Grabar los pasos de un bot")
+            st.caption("Haz el trámite una vez, como lo haces tú hoy. La página anota cada botón que pulses y cada texto que escribas, y lo guarda como pasos automáticos para tus clientes.")
+            if not bots_t:
+                st.info("Primero agrega un bot en 'Fuentes de Extracción'.")
+            else:
+                nombres_b = [f"{b[0]} ({b[3]})" for b in bots_t]
+                bot_g = st.selectbox("Bot a grabar:", nombres_b, key="rec_bot_sel")
+                fila_bot = bots_t[nombres_b.index(bot_g)]
+                correo_g = st.text_input("Correo de prueba (cuando lo escribas en el bot, se guardará como {correo}):", key="rec_correo").strip().lower()
+                if st.button("▶️ Empezar grabación", key="rec_inicio"):
+                    with st.spinner("Conectando con el bot..."):
+                        min_g = correr_con_turno(obtener_ultimo_id, fila_bot[1], fila_bot[0], defecto=0)
+                        hist_g = correr_con_turno(enviar_y_recibir_bot, fila_bot[1], fila_bot[0], "/start", min_g, defecto=AVISO_OCUPADO)
+                    st.session_state['rec'] = {"bot": fila_bot[4], "min": min_g, "pasos": ["/start"], "hist": hist_g}
+                    st.rerun()
+                rec = st.session_state.get('rec')
+                if rec and rec["bot"] == fila_bot[4]:
+                    st.markdown("**Conversación con el bot:**")
+                    for m_g in rec["hist"]:
+                        with st.chat_message(m_g["role"]):
+                            st.write(m_g["content"])
+                    botones_g = next((m_g["botones"] for m_g in reversed(rec["hist"]) if m_g["role"] == "assistant" and m_g.get("botones")), [])
+                    n_paso = len(rec["pasos"])
+                    if botones_g:
+                        st.write("👉 Pulsa el botón que pulsarías tú:")
+                        cols_g = st.columns(min(len(botones_g), 2))
+                        for i_b, txt_b in enumerate(botones_g):
+                            if cols_g[i_b % 2].button(txt_b, key=f"rec_b_{n_paso}_{i_b}", use_container_width=True):
+                                with st.spinner("Pulsando..."):
+                                    rec["hist"] = correr_con_turno(enviar_y_recibir_bot, fila_bot[1], fila_bot[0], f"[BOTON]{txt_b}", rec["min"], defecto=AVISO_OCUPADO)
+                                rec["pasos"].append(f"[BOTON]{txt_b}")
+                                st.rerun()
+                    txt_g = st.text_input("O escribe un texto al bot (por ejemplo, el correo de prueba):", key=f"rec_t_{n_paso}")
+                    if st.button("Enviar texto", key=f"rec_tb_{n_paso}") and txt_g.strip():
+                        with st.spinner("Enviando..."):
+                            rec["hist"] = correr_con_turno(enviar_y_recibir_bot, fila_bot[1], fila_bot[0], txt_g.strip(), rec["min"], defecto=AVISO_OCUPADO)
+                        rec["pasos"].append("{correo}" if (correo_g and txt_g.strip().lower() == correo_g) else txt_g.strip())
+                        st.rerun()
+                    st.markdown("**Pasos grabados hasta ahora:**")
+                    st.code("\n".join(rec["pasos"]), language="markdown")
+                    st.caption("Si el bot tarda en responder en algún paso, puedes agregar una línea [ESPERA]10 en 'Pasos automáticos' para que espere 10 segundos.")
+                    cg1, cg2 = st.columns(2)
+                    if cg1.button("💾 Guardar como pasos de este bot", type="primary", key="rec_guardar"):
+                        c.execute("UPDATE bots_telegram SET recipe_steps=%s WHERE id=%s", ("\n".join(rec["pasos"]), fila_bot[4]))
+                        conn.commit()
+                        st.session_state['rec'] = None
+                        st.success("¡Pasos guardados! Ya puedes probarlos arriba con 'Ejecutar prueba'.")
+                    if cg2.button("🗑️ Descartar grabación", key="rec_descartar"):
+                        st.session_state['rec'] = None
+                        st.rerun()
         conn.close()
 
 # ==========================================
